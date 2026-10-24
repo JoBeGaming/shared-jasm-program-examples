@@ -1,0 +1,20 @@
+#IF defined(LAST_XMAS)
+    .define score 135
+#ELSE IF defined(NEVER_GONNA_GIVE_YOU_UP)
+    .define score 256
+#ELSE
+    #IF defined(WHAM) || defined(RICK_ASTLEY)
+        #ERROR "You are too early, wait until they release the songs."
+    #ELSE IF ~defined(WHAM) ; We should get an error here lolz
+    #ELSE
+        #ERROR "Seems like those artists don't exist yet. Maybe wait a bit longer."
+
+; TODO: Make way to define macros,
+;       e.g. following:
+;       #DEFINE to only store for comptime checks
+;       #ERROR -w for Warnings
+;       #ERROR -s for Saying
+;       #ERROR showing traceback of lines (in this case conditions evaluated)
+
+;       Actual parser (for functions and such too, so we only need to use strings n stuff once, then ParserObject or so idk)
+;       MAKE LS use AST or so, and be able to GUESS / EVAL the value of e.g. score here, and raise error if not defined, ... ykyk (show possible vals)
