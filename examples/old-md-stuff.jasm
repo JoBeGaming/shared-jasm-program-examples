@@ -1,0 +1,848 @@
+; TODO: We assume RPRE takes register as 3rd OP
+; TODO: If we had ANDI, ORI, XORI, RSHI, LSHI we could get away without a flag register (i guess), and maybe even more!
+
+; TODO: Following functions:
+.def _raise_stack_overflow
+.def _raise_stack_underflow
+.def toggle_bold
+.def toggle_italic
+.def increment_size
+.def underline
+.def _putchar
+.def _putcharn
+
+
+; Following flags exist for the LOWER frame:
+;   - H: Size (0-7)
+;   - B: Bold
+;   - I: Italic
+;   - C: Code snippet (`...`)
+;   - X: Code block (```lang\n...```)
+;   - S: Strikethrough
+.define H_FLAG                                                              0b0000_0111 ; 0: Smallest (DEFAULT), 7: Biggest
+.define B_FLAG                                                      0b0000_1000
+.define I_FLAG                                                      0b0001_0000
+.define C_FLAG                                                      0b0010_0000
+.define X_FLAG                                                      0b0100_0000
+.define S_FLAG                                                      0b1000_0000
+
+; Inverted flags:
+.define N_H_FLAG                                                    0b1111_1000
+.define N_B_FLAG                                                    0b1111_0111
+.define N_I_FLAG                                                    0b1110_1111
+.define N_C_FLAG                                                    0b1101_1111
+.define N_X_FLAG                                                    0b1011_1111
+.define N_S_FLAG                                                    0b0111_1111
+
+; TODO: I FORGOT BLOCK QUOTES AGAIN :skull:
+; Following flags exist for the UPPER frame:
+;   - L: Link target index (0-7)
+;   - T: Table (0: No table, 1: In table / Header of table)
+
+; T is built as follows:
+;   0b000R_RRCC
+;        ^   ^
+;        |   +-- Column (0-3)
+;        +------ Row (0: No Table, 1: Header, 2-7)
+
+.define T_FLAG                                                      0b0001_1111
+.define L_FLAG                                                      0b1110_0000
+
+; TODO:
+;     - LISTS
+;     - LINK?! (BASICALLY JUST MARK BLUE + SEND REQ WHEN CLICKED) (LINK ONLY TRAVERSES FS)
+
+.define STACK_L                                                             @01
+.define STACK_H                                                             @00
+
+; Each frame is 16b; The Stack is saved like following:
+; Lower 8b: [(STACK_L, STACK_H), (STACK_L, STACK_H + 0x01), ..., (STACK_L, STACK_H + 0xFF)]
+; Upper 8b: [(STACK_L, STACK_H_U), (STACK_L, STACK_H_U + 0x01), ..., (STACK_L, STACK_H_U + 0xFF)]
+.define STACK_H_U                                                           @01
+
+.define STACK_MAX                                                          0xFF
+
+.define current_char                                                         $1 ; Current character as a byte
+.define char_position                                                        $2 ; TODO: Handling for >256 Chars
+.define stack_ptr                                                            $3
+
+.define target                                                               $4
+
+; TODO: RENAME TO TMP0
+.define tmp                                                                  $5
+.define tmp1                                                                 $6
+.define flag                                                                 $7
+
+.define copy                                                                 $8
+
+; Note: The Flags defined for stack frames are the same used here.
+.define state                                                                $9
+
+; Internal state: Non-visible state flags, e.g.:
+;   - escaped
+;   - comment begin (0-4)
+;   - comment end   (0-3)
+;   - eol
+;   - do_line
+.define int_state                                                            $A
+
+.define tmp2                                                                 $B
+
+; E.g.:
+;   0bABCD_E011
+; & 0b1111_1000
+; = 0bABCD_E000
+
+
+; NOTE: `-` is present twice, as we expect 3rd or 4th position in beginning sequence.
+;
+; +-----------+-----------+---------------------------+---------------------------------------------------------------------------------+
+; | character | set cb to | condition                 | otherwise                                                                       |
+; +-----------+-----------+---------------------------+---------------------------------------------------------------------------------+
+; | any       | 0         | int_state & _CB_FLAG < 4  |                                                                                 |
+; | <         | 1         | int_state & _CB_FLAG == 0 | PASS IF (int_state & _CB_FLAG == 4) ELSE (int_state &= ~_CB_FLAG; putchars())   |
+; | !         | 2         | int_state & _CB_FLAG == 1 | PASS IF (int_state & _CB_FLAG == 4) ELSE (int_state &= ~_CB_FLAG; putchars())   |
+; | -         | 3         | int_state & _CB_FLAG == 2 | PASS IF (int_state & _CB_FLAG == 4) ELSE (int_state &= ~_CB_FLAG; putchars())   |
+; | -         | 4         | int_state & _CB_FLAG == 3 | PASS IF (int_state & _CB_FLAG == 4) ELSE (int_state &= ~_CB_FLAG; putchars())   |
+; +-----------+-----------+---------------------------+---------------------------------------------------------------------------------+
+
+.define _E_FLAG                                                     0b0000_1000
+.define _CB_FLAG                                                    0b0000_0111 ; n characters match a beginning comment (0-4)
+.define _CE_FLAG                                                    0b0011_0000 ; n characters match an ending comment (0-2)
+.define _EOL_FLAG                                                   0b0100_0000 ; previous character was EOL
+.define _L_FLAG                                                     0b1000_0000 ; previous character was # or ##, and we follow with WHITESPACE | COMMENT | EOL
+
+.define _N_CB_FLAG                                                  0b1111_1000
+.define _N_CE_FLAG                                                  0b1100_1111
+.define _N_EOL_FLAG                                                 0b1011_1111
+
+; TODO: ...
+.define chars_l                                                             @12
+.define chars_h                                                             @34
+
+.define CHAR_ESCAPE                                                        "\\"
+.define CHAR_HASHTAG                                                        "#"
+.define CHAR_STAR                                                           "*"
+.define CHAR_UNDERSCORE                                                     "_"
+.define CHAR_BACKTICK                                                       "`"
+
+.define CHAR_EOL                                                            0x0A ; ASCII LF
+.define CHAR_EOF                                                            0x04 ; ASCII EOT
+
+.define CHAR_COMMENT_B_0                                                    "<"
+.define CHAR_COMMENT_B_1                                                    "!"
+.define CHAR_COMMENT_B_2                                                    "-"
+.define CHAR_COMMENT_B_3                                                    "-"
+
+.define CHAR_COMMENT_E_0                                                    "-"
+.define CHAR_COMMENT_E_1                                                    "-"
+.define CHAR_COMMENT_E_2                                                    ">"
+
+.define CHAR_TABLE_H_B_0                                                    "|"
+.define CHAR_TABLE_H_E_0                                                    "|"
+.define CHAR_TABLE_H_E_1                                               CHAR_EOL
+
+
+; pushing only means a single change is commited / uncommited,
+; e.g.: EN_I, DI_I INC_COL, INC_ROW, ...
+
+; (change & KIND_FLAG) == {ME|EN|DI}_FLAG
+
+.define KIND_FLAG                                                   0b1100_0000
+.define ME_FLAG                                                     0b0000_0000
+.define EN_FLAG                                                     0b1000_0000
+.define DI_FLAG                                                     0b1100_0000
+
+; META
+.define INC_SIZE                                                    0b0000_0001
+.define INC_COL                                                     0b0000_0010
+.define INC_ROW                                                     0b0000_0011
+.define LANGID                                                      0b0000_0100 ; Next Token is 0x00 - 0xff as LANGID
+
+.define EN_I                                                        0b1000_0001
+.define EN_B                                                        0b1000_0010
+.define EN_C                                                        0b1000_0011
+.define EN_X                                                        0b1000_0100
+.define EN_S                                                        0b1000_0101
+.define DI_I                                                        0b1100_0001
+
+.def push_context
+    not     stack_ptr r0
+    branch  +1 ~on
+        ; fail: We cannot PSH any further, as the SP is at 0xFF already,
+        ;       and the next PSH would cause an overflow.
+
+        ; Note: _raise_stack_overflow does NOT return.
+        call    _raise_stack_overflow
+
+    addi    0x01 stack_ptr stack_ptr
+    rpre    STACK_L STACK_H_U stack_ptr
+
+    ; Context Frame L and H should be on the stack.
+    ; We pop H, L.
+    pop     tmp
+    str     @00 @00 tmp
+
+    rpre    STACK_L STACK_H stack_ptr
+    pop     tmp
+    str     @00 @00 tmp
+
+    ret
+
+
+.def pop_context
+    cmpr    stack_ptr r0 ~neq
+    branch  +1 ~neq
+        ; fail: We cannot POP any further, as the SP is at 0x00 already,
+        ;       and the next POP would cause an underflow.
+
+        ; Note: _raise_stack_underflow does NOT return.
+        call    _raise_stack_underflow
+
+    subi    0x01 stack_ptr stack_ptr
+    rpre    STACK_L STACK_H stack_ptr
+
+    lod     @00 @00 tmp
+
+    ; Context Frame should be on the stack.
+    psh     tmp
+
+    rpre    STACK_L STACK_H_U stack_ptr
+    lod     @00 @00 tmp
+    psh     tmp
+
+    ret
+
+
+.def peek_context
+    ; NOTE: This raises stack underflow if the stack is empty.
+    call    pop_context
+    pop     tmp
+    pop     tmp1
+    psh     tmp1
+    psh     tmp
+    call    push_context
+    psh     tmp1
+    psh     tmp
+    ret
+
+
+.def get_cb
+    ; flag = int_state & _CB_FLAG
+    ldi     _CB_FLAG flag
+    and     int_state flag flag
+    psh     flag
+    ret
+
+
+.def set_cb
+    ; int_state = (int_state & _N_CB_FLAG) | tmp
+    pop     tmp
+    ldi     _N_CB_FLAG flag
+    and     int_state flag flag
+    or      flag tmp int_state
+    ret
+
+
+.def reset_cb
+    ; int_state = (int_state & _N_CB_FLAG) | 0x00
+    ldi     _N_CB_FLAG flag
+    and     int_state flag int_state
+    ret
+
+
+.def get_ce
+    ; flag = (int_state & _CE_FLAG) >> 4
+    ldi     _CE_FLAG flag
+    ldi     0x04 tmp
+    and     int_state flag flag
+    rsh     flag tmp flag
+    psh     flag
+    ret
+
+
+.def set_ce
+    ; int_state = (int_state & _N_CE_FLAG) | (tmp << 4)
+    pop     tmp
+    ldi     0x04 flag
+    lsh     tmp flag tmp
+    ldi     _N_CE_FLAG flag
+    and     int_state flag flag
+    or      flag tmp int_state
+    ret
+
+
+.def reset_ce
+    ; int_state = (int_state & _N_CE_FLAG) | 0x00
+    ldi     _N_CE_FLAG flag
+    and     int_state flag int_state
+    ret
+
+
+.def get_ht_count
+    call    peek_context
+    pop     r0
+    pop     tmp
+
+    ; ht = (peek() & H_FLAG)
+    ldi     H_FLAG flag
+    and     flag tmp tmp
+    psh     tmp
+    ret
+
+
+.def reset_ht_count
+    call    pop_context
+    pop     tmp1
+    pop     tmp
+
+    ldi     N_H_FLAG flag
+    and     flag tmp tmp
+    psh     tmp
+    psh     tmp1
+    call    push_context
+    ret
+
+
+.def inc_ht_count
+    call    pop_context
+    pop     tmp1
+    pop     tmp
+
+    ldi     H_FLAG flag
+    and     flag tmp tmp2
+    ldi     0x07 flag
+    cmpr    tmp2 flag ~eq
+    branch  +1 ~eq
+        addi    0x01 tmp2 tmp2
+
+    ; Discard last 3 bits.
+    ldi     N_H_FLAG flag
+    and     flag tmp tmp
+
+    ; Add the new last 3b.
+    or      tmp tmp2 tmp
+
+    psh     tmp
+    psh     tmp1
+    call    push_context
+    ret
+
+
+; TODO: WE MIGHT CALL FUNCTIONS THAT INVALIDATE tmp/tmp0/tmp1/flag reg (or even more?)
+.def reset_eol_flag
+    ; int_state &= ~_EOL_FLAG
+    ldi    _N_EOL_FLAG flag
+    and    int_state flag int_state
+
+
+.def in_comment
+    ; Set the flags ~eq = 1 and ~neq = 0
+    ; if we currently are in a comment.
+    ; Otherwise, ~eq = 0 and ~neq = 1.
+    call    get_cb
+    pop     flag
+    ldi     0x04 tmp
+    cmpr    flag tmp ~eq
+    cmpr    flag tmp ~neq
+
+
+.def flush_partial_cb
+    ; put rest of `<!--` on screen if the comment start failed.
+    call    get_cb
+    pop     tmp
+
+    cmpr    tmp r0 ~neq
+    branch  +1 ~neq
+        ret
+
+    ldi     0x01 flag
+    cmpr    tmp flag ~neq
+    branch  +3 ~neq
+        pshi    CHAR_COMMENT_B_0
+        call    putchar
+        ret
+
+    ldi     0x02 flag
+    cmpr    tmp flag ~neq
+    branch  +5 ~neq
+        pshi    CHAR_COMMENT_B_0
+        call    putchar
+        pshi    CHAR_COMMENT_B_1
+        call    putchar
+        ret
+
+    ldi     0x03 flag
+    cmpr    tmp flag ~neq
+    branch  +7 ~neq
+        pshi    CHAR_COMMENT_B_0
+        call    putchar
+        pshi    CHAR_COMMENT_B_1
+        call    putchar
+        pshi    CHAR_COMMENT_B_2
+        call    putchar
+        ret
+
+    ; tmp == 4, as it cannot be bigger
+    pshi    CHAR_COMMENT_B_0
+    call    putchar
+    pshi    CHAR_COMMENT_B_1
+    call    putchar
+    pshi    CHAR_COMMENT_B_2
+    call    putchar
+    pshi    CHAR_COMMENT_B_3
+    call    putchar
+    ret
+
+
+.def process_char_s1 ; TODO: Simplify ELSE logic when possible
+    ; Filter out comments and EOF
+    pop     current_char
+
+    ; We ignore the syntactical errors that might stem from us doing this,
+    ; just because this is way easier.
+    ldi     CHAR_EOF tmp
+    cmpr    current_char tmp ~neq
+    branch  +1 ~neq
+        ret
+
+    ; NOTE: You cannot escape a comment (i.e.: `<!--` or `-->`). Therefore we
+    ;       check for us being inside a comment first. This is why step 1 only
+    ;       filters out comments.
+
+    ; Reset copy's 1st bit.
+    ldi     0b1111_1110 tmp
+    and     tmp copy copy
+
+    call    in_comment
+    branch  +2 ~neq
+        ; Set copy's 1st bit.
+        ldi     0b0000_0001 tmp1
+        or      tmp1 copy copy
+
+    branch  +55 ~neq
+        ; Reset copy's 2nd bit.
+        ldi     0b1111_1101 tmp
+        and     tmp copy copy
+
+        call    get_ce
+        pop     tmp
+
+        cmpr    tmp r0 ~neq
+        branch  +2 ~neq
+            ; Set copy's 2nd bit.
+            ldi     0b0000_0010 tmp1
+            or      tmp1 copy copy
+
+        branch  +5 ~neq
+            ; CE == 0, expect "-".
+            ldi     CHAR_COMMENT_E_0 target
+            cmpr    current_char target ~neq
+            branch  +2 ~neq
+                pshi    0x01
+                call    set_ce
+
+        ; Check wether we had ~neq or ~eq before.
+        ; IF copy[-2] == 0: NEQ
+        ldi     0b0000_0010 tmp1
+        and     tmp1 copy tmp1
+        cmpr    tmp1 r0 ~neq
+        branch  +37 ~neq
+            ; CE != 0
+
+            ; Reset copy's 3rd bit.
+            ldi     0b1111_1011 tmp1
+            and     tmp1 copy copy
+
+            ldi     0x01 tmp1
+            cmpr    tmp tmp1 ~neq
+            branch  +2 ~neq
+                ; Set copy's 3rd bit.
+                ldi     0b0000_0100 tmp1
+                or      tmp1 copy copy
+
+            branch  +7 ~neq
+                ; CE == 1, expect "-".
+                ldi     CHAR_COMMENT_E_1 target
+                cmpr    current_char target ~neq
+                branch  +2 ~neq
+                    pshi    0x02
+                    call    set_ce
+
+                ; NEQ
+                branch  +1 ~eq
+                    call    reset_ce
+
+            ; Check wether we had ~neq or ~eq before.
+            ; IF copy[-3] == 0: NEQ
+            ldi     0b0000_0100 tmp1
+            and     tmp1 copy tmp1
+            cmpr    tmp1 r0 ~neq
+            branch  +18 ~neq
+                ; CE == 2
+
+                ; Reset copy's 4th bit.
+                ldi     0b1111_0111 tmp1
+                and     tmp1 copy copy
+
+                ; Expect ">".
+                ldi     CHAR_COMMENT_E_2 target
+                cmpr    current_char target ~neq
+                branch  +2 ~neq
+                    ; Set copy's 4th bit.
+                    ldi     0b0000_1000 tmp1
+                    or      tmp1 copy copy
+
+                branch  +2 ~neq
+                    ; Character is ">", end the comment.
+                    call    reset_cb
+                    call    reset_ce
+
+                ; Check wether we had ~neq or ~eq before.
+                ; IF copy[-4] == 0: NEQ
+                ldi     0b0000_1000 tmp1
+                and     tmp1 copy tmp1
+                cmpr    tmp1 r0 ~neq
+                branch  +4 ~neq
+                    ; If character is "-", we keep CE at 2,
+                    ; so e.g. `--->` is allowed.
+                    ldi     CHAR_COMMENT_E_1 target
+                    cmpr    current_char target ~eq
+                    branch  +1 ~eq
+                        call    reset_ce
+
+                    ; CE is still 2.
+
+    ; Check wether we had ~neq or ~eq before.
+    ; IF copy[-1] == 0: NEQ
+    ldi     0b0000_0001 tmp1
+    and     tmp1 copy tmp1
+    cmpr    tmp1 r0 ~neq
+    branch  +106 ~neq
+        ; Reset copy's 2nd bit.
+        ldi     0b1111_1101 tmp
+        and     tmp copy copy
+
+        call    get_cb
+        pop     tmp
+
+        cmpr    tmp r0 ~neq
+        branch  +2 ~neq
+            ; Set copy's 2nd bit.
+            ldi     0b0000_0010 tmp1
+            or      tmp1 copy copy
+
+        branch  +16 ~neq
+            ; Reset copy's 3rd bit.
+            ldi     0b1111_1011 tmp1
+            and     tmp1 copy copy
+
+            ; CB == 0, expect "<".
+            ldi     CHAR_COMMENT_B_0 target
+            cmpr    current_char target ~neq
+            branch  +2 ~neq
+                ; Set copy's 3rd bit.
+                ldi     0b0000_0100 tmp1
+                or      tmp1 copy copy
+
+            branch  +2 ~neq
+                ; We could e.g. check if we have some situation with a comment following
+                ; characters that expect a newline, e.g.: `#<!--...-->`, but normally md
+                ; renders that as an error.
+                pshi    0x01
+                call    set_cb
+
+            ; Check wether we had ~neq or ~eq before.
+            ; IF copy[-3] == 0: NEQ
+            ldi     0b0000_0100 tmp1
+            and     tmp1 copy tmp1
+            cmpr    tmp1 r0 ~neq
+            branch  +2 ~neq
+                ; Go into step 2.
+                psh     current_char
+                call    process_char_s2
+
+        ; Check wether we had ~neq or ~eq before.
+        ; IF copy[-2] == 0: NEQ
+        ldi     0b0000_0010 tmp1
+        and     tmp1 copy tmp1
+        cmpr    tmp1 r0 ~neq
+        branch  +77 ~neq
+            ; CB != 0
+
+            ; Reset copy's 3rd bit.
+            ldi     0b1111_1011 tmp1
+            and     tmp1 copy copy
+
+            ldi     0x01 tmp1
+            cmpr    tmp tmp1 ~neq
+            branch  +2 ~neq
+                ; Set copy's 3rd bit.
+                ldi     0b0000_0100 tmp1
+                or      tmp1 copy copy
+
+            branch  +16 ~neq
+                ; CB == 1, expect "!".
+
+                ; Reset copy's 4th bit.
+                ldi     0b1111_0111 tmp1
+                and     tmp1 copy copy
+
+                ldi     CHAR_COMMENT_B_1 target
+                cmpr    current_char target ~neq
+                branch  +2 ~neq
+                    ; Set copy's 4th bit.
+                    ldi     0b0000_1000 tmp1
+                    or      tmp1 copy copy
+
+                branch  +2 ~neq
+                    pshi    0x02
+                    call    set_cb
+
+                ; Check wether we had ~neq or ~eq before.
+                ; IF copy[-4] == 0: NEQ
+                ldi     0b0000_1000 tmp
+                and     tmp1 copy tmp1
+                cmpr    tmp1 r0 ~neq
+                branch  +4 ~neq
+                    call    flush_partial_cb
+                    call    reset_cb
+
+                    ; Go into step 2.
+                    psh     current_char
+                    call    process_char_s2
+
+            ; Check wether we had ~neq or ~eq before.
+            ; IF copy[-3] == 0: NEQ
+            ldi     0b0000_0100 tmp1
+            and     tmp1 copy tmp1
+            cmpr    tmp1 r0 ~neq
+            branch  +48 ~neq
+                ; CB != 1 (and CB != 0)
+
+                ; Reset copy's 4th bit.
+                ldi     0b1111_0111 tmp1
+                and     tmp1 copy copy
+
+                ldi     0x02 tmp1
+                cmpr    tmp tmp1 ~neq
+                branch  +2 ~neq
+                    ; Set copy's 4th bit.
+                    ldi     0b0000_1000 tmp1
+                    or      tmp1 copy copy
+
+                branch  +18 ~neq
+                    ; CB == 2, expect "-".
+
+                    ; reset copy's 5th bit.
+                    ldi     0b1110_1111 tmp1
+                    and     tmp1 copy copy
+
+                    ldi     CHAR_COMMENT_B_2 target
+                    cmpr    current_char target ~neq
+                    branch  +2 ~neq
+                        ; Set copy's 5th bit.
+                        ldi     0b0001_0000 tmp1
+                        or      tmp1 copy copy
+
+                    branch  +2 ~neq
+                        pshi    0x03
+                        call    set_cb
+
+                    ; Check wether we had ~neq or ~eq before.
+                    ; IF copy[-5] == 0: NEQ
+                    ldi     0b0001_0000 tmp1
+                    and     tmp1 copy tmp1
+                    cmpr    tmp1 r0 ~neq
+                    branch  +4 ~neq
+                        call    flush_partial_cb
+                        call    reset_cb
+
+                        ; Go into step 2.
+                        psh     current_char
+                        call    process_char_s2
+
+                ; Check wether we had ~neq or ~eq before.
+                ; IF copy[-4] == 0: NEQ
+                ldi     0b0000_1000 tmp1
+                and     tmp1 copy tmp1
+                cmpr    tmp1 r0 ~neq
+                branch  +18 ~neq
+                    ; CB != 2 (and CB != 1 and CB != 0). We know CB == 3,
+                    ; other values are not valid.
+
+                    ; Reset copy's 5th bit.
+                    ldi     0b1110_1111 tmp1
+                    and     tmp1 copy copy
+
+                    ldi     CHAR_COMMENT_B_3 target
+                    cmpr    current_char target ~neq
+                    branch  +2 ~neq
+                        ; Set copy's 5th bit.
+                        ldi     0b0001_0000 tmp1
+                        or      tmp1 copy copy
+
+                    branch  +2 ~neq
+                        pshi    0x04
+                        call    set_cb
+
+                    ; Check wether we had ~neq or ~eq before.
+                    ; IF copy[-5] == 0: NEQ
+                    ldi     0b0001_0000 tmp1
+                    and     tmp1 copy tmp1
+                    cmpr    tmp1 r0 ~neq
+                    branch  +4 ~neq
+                        call    flush_partial_cb
+                        call    reset_cb
+
+                        ; Go into step 2.
+                        psh     current_char
+                        call    process_char_s2
+
+    ret
+
+
+.def process_char_s2
+    ; Filter out headings and EOL
+    pop     current_char
+
+    ; TODO: SHOULD EOL BE ALLOWED SPECIALLY IN: CODE; LINKS;
+
+    ldi     CHAR_EOL target
+    cmpr    current_char target ~neq
+    branch  +13 ~neq
+        ; Special case. We handle both of:
+        ;   # <!--optional-comment-->    \n
+        ; and:
+        ;   ## <!--optional-comment-->    \n
+        ; the same way.
+
+        call    get_ht_count
+        pop     tmp
+
+        cmpr    tmp r0 ~eq
+        branch  +4 ~eq
+            ; htc != 0.
+
+            ldi     0x02 tmp1
+            cmpr    tmp tmp1 ~gt
+            branch  +1 ~gt
+                ; htc <= 2, but htc != 0.
+                call    putchar_line
+
+            ; TODO: PRINT WHOLE #### **aaa** \n IF HTC > 2
+
+        call    reset_ht_count
+
+        ; int_state |= _EOL_FLAG
+        ldi     _EOL_FLAG flag
+        or      flag int_state int_state
+        call    putchar_newln
+        ret
+
+    ; Reset copy's 6th bit (s1 only goes up to 5th bit).
+    ldi     0b1101_1111 tmp1
+    and     tmp1 copy copy
+
+    ldi     _EOL_FLAG flag
+    and     flag int_state tmp
+    cmpr    tmp r0 ~eq
+    branch  +2 ~eq
+        ; Set copy's 6th bit.
+        ldi     0b0010_0000 tmp1
+        or      tmp1 copy copy
+
+    branch  +4 ~eq
+        call    reset_eol_flag
+
+        ; Previous character was EOL.
+        ldi     CHAR_HASHTAG target
+        cmpr    current_char target ~neq
+        branch  +1 ~neq
+            call    inc_ht_count
+
+        ; ... possibly more hooks for EOL before
+
+    ; Check wether we had ~neq or ~eq before.
+    ; IF copy[-6] == 0: NEQ
+    ldi     0b0010_0000 tmp1
+    and     tmp1 copy tmp1
+    cmpr    tmp1 r0 ~neq
+    branch  + ~neq
+        ; Previous character was NOT EOL.
+        cmpr    ...
+
+
+
+
+; TBD: ...
+; TODO: SIMPLIFY ELSE LOGIC WHEN IF CASE HAS NO WAY TO MODIFY FLAG
+
+; TODO: We might want to make this not be recursive, as the callstack is (obviously) limited
+.def mainloop
+    rpre    chars_l chars_h char_position
+    lod     @00 @00 current_char
+
+    psh     current_char
+    call    process_char
+
+    ; IF ~zero:
+    ;    BREAK
+    branch  +2 ~zero
+        call    inc_charpos
+        call    mainloop
+
+    ret
+
+.def main
+    call    mainloop
+
+    ; TODO: THIS IS OUTSIDE THE LOOP, AFTER WE ARE DONE
+    call    in_comment
+    branch  +1 ~eq
+        call    flush_partial_cb
+
+    ret
+
+
+.def process_char
+    pop     current_char
+
+    ; NOTE: You cannot escape a comment (i.e.: `<!--` or `-->`). Therefore we
+    ;       check for us being inside a comment first.
+    ldi     ...
+
+    ; flag = int_state & _E_FLAG
+    ldi     _E_FLAG flag
+    and     int_state flag flag
+
+    cmpr    flag r0 ~eq
+    branch  +2 ~eq
+        ; Current character got escaped.
+
+        ; if (!contains(ESCAPABLE_CHARS, char) {
+        ;     putchar(CHAR_ESCAPE);
+        ;     putchar(char);
+        ; } else {
+        ;     putchar(char);
+        ; }
+        psh     current_char
+        call    is_escapable
+
+        ; If `is_escapable` returned 0x00, the character cannot be escaped.
+        pop     flag
+        cmpr    flag r0 ~eq
+        branch  ...
+
+    pop     current_char
+
+    ldi     star target
+    cmpr    current_char target ~neq
+    branch  +1 ~neq
+        call    handle_star
+
+; NOTE: Most rendering engines display e.g.:
+; **a<!--b**
+; as some:
+; **a
+; but we probably won't allow backtracing for such a long block.
