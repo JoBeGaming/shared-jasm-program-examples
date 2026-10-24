@@ -1,0 +1,86 @@
+; VERY OLD: I CHANGED ONLY THE IMPORT SYNTAX WHICH SLIGHTLY CHANGED.
+.use <cfg/vars.jasm>
+
+
+; Size of the hashable.
+.define H_SIZE                                          TMP0
+.define H_START_L                                       TMP1
+.define H_START_H                                       TMP2
+.define H_NEXT                                          TMP3
+
+
+; Luckily vars.jasm defines exactly 5 TMP registers.
+.define __H_CUR                                         TMP4
+
+
+; Largest 8b prime, 251.
+.define __PRIME_8                                       0xFB
+.define __SEED_8                                        __PRIME_8
+
+
+
+; Get the currently used 8b seed. This, by default, is the highest 8-Bit prime.
+; See also `__SEED_8`.
+.def get_seed_8
+    psh     __SEED_8
+    ret
+
+
+.def fnv1a_8
+    ; Size of the hashable.
+    pop     H_SIZE
+
+    pop     H_START_L
+    pop     H_START_H
+
+    ldi     __SEED_8 __H_CUR
+
+    ; Main loop.
+    call    __fnv1a_8l
+
+    psh     __H_CUR
+    ret
+
+
+.def __fnv1a_8l
+    ; Sets H_NEXT. We start from the back, which is both uncommon, as well as
+    ; more efficient. This way, we can simply check for H_SIZE being set to 0x00,
+    ; stopping if the condition is met.
+    call    __fnv1a_8next
+    subi    0x01 H_SIZE H_SIZE
+
+    ; If not H_SIZE == 0x00, continue.
+    cmpr    H_SIZE r0 ~eq
+    branch i1 i0 ~eq
+        ; Else
+        call    __fnv1a_8l
+
+    ret
+
+
+.def __fnv1a_8next
+    rpre    H_START_L H_START_H H_SIZE
+    lod     @00 @00 H_NEXT
+
+
+.def __fnv1a_8byte
+    ; Actual hashing. We do following operations.
+    ;    cur ^= next
+    ;    cur *= __PRIME
+    ; We used to check for H_NEXT being 0x00 here, but since we only use XOR with
+    ; H_NEXT here, we can assume some A ^ 0x00 = A. Therefore, we don't check for
+    ; 0x00, as there are no edge-cases, and performance-wise, we would have to
+    ; add 2 instructions to check for H_NEXT being 0x00, and taking the conditional,
+    ; which would have been less efficient, as the hashing only requires two
+    ; operations.
+    xor     __H_CUR H_NEXT __H_CUR
+    multi   __PRIME_8 __H_CUR __H_CUR
+
+    ; If we didn't want to use `multi`, we could do:
+    ;    ldi     __PRIME_8 H_NEXT
+    ;    mult    H_NEXT __H_CUR __H_CUR
+    ;
+    ; Being the same as defining a new `__R_PRIME_8` register, which gets it's
+    ; usage switched between H_NEXT and __PRIME_8 continuously.
+
+    ret
