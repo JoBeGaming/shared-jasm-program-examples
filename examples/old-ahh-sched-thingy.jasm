@@ -1,0 +1,333 @@
+; ONLY THING I CHANGED IS OLD INCLUDE SYNTAX
+#ISA 2.6.2w
+
+; New Interrupt: INT_POLL
+
+
+.use "cfg/vars.jasm"
+.use <settingids.jasm> ; TODO: Follow linking here... ; TODO: In comments, var names get shown with stuff still ; TODO: Make vars show source if not defined in same file
+
+
+; TODO: Make KNL schedule a event to reset polling every 65535 units + updated pollt_counter in ram (FF F2)
+
+.define PASSED_TC                                       KNL0 ; KNL0 isnt found, or highlighted, and we dont check if .define gets vaule or key, or if symbol is invalid
+.define POLLT_COUNTER                                   KNL1
+
+.define TC_LEFT_L                                       KNL0
+.define TC_LEFT_H                                       KNL1
+
+
+; ID of the current event.
+.define EVNT_ID                                         TMP0
+
+; Lowest available event ID.
+.define LOWEST_ID                                       TMP1
+
+.define LOWEST_ID_L                                     @FA
+.define LOWEST_ID_H                                     @FF
+
+.define EVNT_INDEX_TABLE_L                              @FB
+.define EVNT_INDEX_TABLE_H                              @00
+
+
+#DEFINE AS __not_inlineable__(
+    #DEFINE AS __volatile__( ; THIS IS DEFAULT, BOTH ARE, so we might just ignore that?!
+
+        .def init
+            ; TODO: Does assembler support stg using callables
+            stg     poll_address POLL_HANDLER
+            stg     poll_context 0xFF 0xF1
+            stg     lock_stg poll_address
+            stg     lock_stg poll_context
+            ; TODO
+            ; START POLLING
+            ; ... 0x00
+            ; MANUALLY SCHEDULE increment_polltcf,
+            ; WHICH WILL SCHEDULE increment_polltc
+            ; WHEN DONE (WHICH WILL SCHEDULE ITSELF).
+            ret
+
+
+        ; Basic design:
+        ; KNL -> CPU: Make a INT_POLL in n (t) cycles
+        ; ...
+        ; CPU -> KNL: rldi {PASSED_TC} {POLL_CONTEXT}
+        ; CPU -> KNL: call {POLL_ADDRESS}
+        ; ...
+        ; KNL -> CPU: Make a INT_POLL in n (t) cycles
+        ; ...
+
+        ; This doesn't work, when we schedule the next
+        ; poll, then receive a shorter timeframe. That
+        ; is the reason for the addition of the `gstg`
+        ; setting `poll_left`.
+        ; KNL -> CPU: Make a INT_POLL in n (t) cycles
+        ; ...
+        ; KNL -> CPU: How much time is left?
+        ; CPU -> KNL: ...
+        ; ...
+        ; KNL -> CPU: Make a INT_POLL in n (t) cycles
+        ; ...
+        ; CPU -> KNL: rldi {PASSED_TC} {POLL_CONTEXT}
+        ; CPU -> KNL: call {POLL_ADDRESS}
+        ; ...
+
+
+        .def increment_polltc
+            ; TODO: LS WARNING HERE
+
+
+        .def reset_polling_event
+            lod     @FF @F2 POLLT_COUNTER
+            addi    0x01 POLLT_COUNTER POLLT_COUNTER
+            str     POLLT_COUNTER @FF @F2
+
+            ; Schedule ourselves again
+            psh     reset_polling_event ; TODO: Push l/h seperately
+            call    sched ; doesnt error on sched not being defined...
+            ret
+
+
+        ; Get the total number of cycles since the device has been turned on.
+        ; The returned value might be off by at least 6 cycles. To get the accurate
+        ; time, use `pollt`.
+        .def pollt_fast
+            ; Note: The returned value will be off by at least 6, as no additional
+            ;       mathematical calculations are made to calculate the added time. To
+            ;       get the valid time, use pollt instead.
+            ; Note: Due to 16b integer overflow, this function could result in a time of
+            ;       0x0000 being shown, especially if the polltc overflows to too. In
+            ;       such situations, it is the users responsibility to check for that
+            ;       case, and poll again if needed. The maximum number of polls needed
+            ;       to be somewhat accurate is 2. If either one of them returned 0x000000,
+            ;       the other has to return something nearby, e.g. 0x00000F or 0xFFFFF0.
+
+            gstg    poll_left TC_LEFT_L TC_LEFT_H
+            lod     @FF @F2 POLLT_COUNTER
+            psh     TC_LEFT_L
+            psh     TC_LEFT_H
+            psh     POLLT_COUNTER
+            call    reset_polling_event
+            ret
+
+
+        ; Get the total number of cycles since the device has been turned on.
+        .def pollt
+            ; Maximum is 24b max, so 16777216 cycles.
+
+            ; We first get the POLLT_COUNTER, then the tc_left, as the POLLT_COUNTER being
+            ; off by one will have a smaller influence as it would for the tc_left. E.g.:
+            ;
+            ; -- Actual: 0xFFFF, 0x01 --
+            ;   polltc = 0x01
+            ;   tcl = 0x0000
+            ;   t = tcl     ; 0x00000
+            ;   t *= polltc ; 0x00000
+            ;
+            ; Whereas, otherwise:
+            ;   tcl = 0xFFFF
+            ;   polltc = 0x02
+            ;   t = tcl     ; 0x00FFFF
+            ;   t *= polltc ; 0x01FFFE
+
+            ; We however don't use the given tcl, and instead subtract the number of cycles
+            ; that polltc is behind.
+            ;
+            ; -- Actual: 0xFFFF, 0x01 --
+            ;   polltc = 0x01
+            ;   tcl = 0x0000
+            ;   t = tcl - 1 ; 0x00FFFF
+            ;   t *= polltc ; 0x00FFFF
+            ;
+            ; Additionally, getting polltc first is also useful for the later decrementing
+            ; of the 16b integer tcl. See the comment there for more.
+
+            lod     @FF @F2 POLLT_COUNTER
+            gstg    poll_left TC_LEFT_L TC_LEFT_H
+
+            cmpr    TC_LEFT_L r0 ~eq
+            cmpr    TC_LEFT_L r0 ~neq
+
+            ; Synchronize both paths.
+            ; This branch needs to be first, as the inner part updates the eq flag.
+            branch  i0 i6 ~eq
+                ; just stl 0x06
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+
+            branch  i0 i6 ~neq
+                ; If tcl_l was 0x00, tcl_h cannot be 0x00 too, as the counter has to be
+                ; above 0x0000. That is because we placed the lod instruction first, so
+                ; no reset could have happened. We can also assume, that the counter is
+                ; not at 0xFFFFFF, and incremented to go over it to 0x000000, as the
+                ; kernel scheduled the reset_polling_event as one of the first things
+                ; it did. We also scheduled an event increment_polltc, as the booting
+                ; might take more than 65535 instructions, if something goes horribly
+                ; wrong. We do start the polling quite late into startup, being in the
+                ; KNL_STARTUP phase rather than the direct booting phase, but we don't
+                ; need any polling beforehand.
+
+                ; Although the reason for why this is rarely needed has been stated above,
+                ; having this sanity check (which will only run rarely either way) doesn't
+                ; hurt.
+                cmpr    TC_LEFT_H r0 ~eq
+                cmpr    TC_LEFT_H r0 ~neq
+
+                branch  i0 i1 ~neq
+                    subi    0x01 TC_LEFT_H TC_LEFT_H
+
+                ; Synchronize both paths.
+                branch  i0 i1 ~eq
+                    nop
+
+            ; Only 1 instruction difference
+            subi    0x01 TC_LEFT_L tc_left_l
+
+            psh     TC_LEFT_L
+            psh     TC_LEFT_H
+            psh     POLLT_COUNTER
+
+            ; Save ctx. The contime addition at the function uses the CONTIME version, in which
+            ; we know the time it took for the ctx_save is
+            ;   t = #registers * __ + __
+            call    ctx_save_nostack_contime
+
+            ; 16b * 8b -> 24b
+            call    m168l1
+
+            ; Restore ctx
+            call    ctx_restore_nostack_contime
+
+            ; With 17 instructions for pollt, 13 for m168l1, and 17 * 8 for the m168l2,
+            ; we know cnst:
+            ;   cnst = 17 + t1 + 13 + t2 + 17 * 8
+            ;   cnst = 17 + t1 + 13 + t2 + 144
+            ;   cnst = 174 + t1 + t2
+
+            ; The parameters t1 and t2 are the time it takes ctx_save_nostack_contime and
+            ; ctx_restore_nostack_contime.
+            call    cnstadd24_174
+            ret
+
+
+        .def m168l1
+            ; Initiation of the loop.
+
+            ; Multiplier
+            pop     TMP0
+
+            ; 16b h/l
+            pop     TMP2
+            pop     TMP1
+
+            ; Result l, m, h
+            ldi     0x00 TMP3
+            ldi     0x00 TMP4
+            ldi     0x00 MMBP   ; Use MMBP as TMP5. This can also be somewhat risky...
+
+            ldi     0x08 LIDX
+
+            ; See m168l2 for why this usually is a bad idea.
+            ldi     0x00 TCP1   ; Padding counter
+
+            call    m168l2
+            psh     TMP3
+            psh     TMP4
+            psh     MMBP
+            ret
+
+
+        .def m168l2
+            ; Assume m168l1 as the only caller.
+
+            ; Risky: We use TPC0.
+            ; This function should only be called after a ctx_save, but there might be
+            ; situations, in which the ctx_save is not called, which will destroy TCP0.
+            ; In that case, it was the users responsibility to do so. Failure to do so,
+            ; WILL result in lost values.
+
+            mov     TMP0 TCP0
+            nandi   0x01 TCP0 TCP0
+
+            mov     TMP1 TCP1
+            and     TCP1 TCP0 TCP1
+            add     TMP3 TCP1 TMP3
+            addca   TMP4 r0 TMP4
+            addca   MMBP r0 MMBP
+
+            mov     TMP2 TCP1
+            and     TCP1 TCP0 TCP1
+            add     TMP4 TCP1 TMP4
+            addca   MMBP r0 MMBP
+
+            lshi    0x01 TMP1 TMP1
+            addca   TMP2 r0 TMP2
+
+            rshi    0x01 TMP0 TMP0
+
+            subi    0x01 LIDX LIDX
+            cmpr    LIDX r0 ~eq
+            branch  i1 i0 ~eq
+                call    m168l2
+
+            ret
+    )
+)
+
+
+.def poll_in
+    pop     h1 l1
+    gstg    poll_left l h
+    ; cmp16   t1 t2 l1 l2
+    ; if gte:
+    ;     update_evlist
+    ;     ret
+    ; update_evlist
+    ; make_poll diff
+    ret
+
+
+.def POLL_HANDLER
+    ; Get poll context. This mostly is just the
+    ; number of (theoretical) cycles that passed,
+    ; after the last reset.
+    lod     @FF @F1 PASSED_TC
+    ; TODO lol
+
+
+; *params*: -
+; *returns*: EVNT_ID
+; *clutters*: $EVNT_ID and $LOWEST_ID registers.
+.def sched
+    ; TODO
+    ; todo: MAKE RERGEX FOR PARAMS OF # macros be shown
+    psh     EVNT_ID
+    ret
+
+
+.def cancel
+    pop     EVNT_ID
+
+    ; Get the lowest ID.
+    lod     LOWEST_ID_L LOWEST_ID_H LOWEST_ID
+
+    cmpr    EVNT_ID LOWEST_ID ~gt
+    branch  i1 i0 ~gt
+        ; If EVNT_ID we want to cancel is smaller than the current LOWEST_ID, we
+        ; set LOWEST_ID to EVNT_ID.
+        str     EVNT_ID LOWEST_ID_L LOWEST_ID_H
+
+    ; Reset the pointer to the event hook for the lower part.
+    rpre    EVNT_INDEX_TABLE_L EVNT_INDEX_TABLE_H EVNT_ID
+    rldi    0x00 @00 @00
+
+    ; Get to the upper part, and reset the pointer there too.
+    ori     0b1000_0000 EVNT_ID EVNT_ID
+
+    rpre    EVNT_INDEX_TABLE_L EVNT_INDEX_TABLE_H EVNT_ID
+    rldi    0x00 @00 @00
+    ret
