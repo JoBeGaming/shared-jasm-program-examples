@@ -1,0 +1,51 @@
+.use <sysinfo.jasm>
+
+
+.define AC_UNREACHABLE                                                      0x01
+.define AC_ASSERT_FAILED                                                    0x02
+
+
+.def _assert_fail
+    ; Infinite loop with no stack usage.
+    nop
+    jmp     ~-1
+
+
+.def _assert_fail_ac
+    pop     $1
+    call    retrieve_system_information
+    call    _assert_fail
+    ret
+
+
+.def static_unreachable
+    call    _assert_fail
+    ret
+
+
+.def assert_unreachable
+    pshi    AC_UNREACHABLE
+    call    _assert_fail_ac
+    ret
+
+
+.def assert
+    pop    CONDITION
+    cmpr   CONDITION $0 ~eq
+    branch ~+2 ~eq
+        pshi    AC_ASSERT_FAILED
+        call    _assert_fail_ac
+    ret
+
+
+; Assert, where stack is not
+; changed for the user.
+.def static_assert
+    pop     CONDITION
+    cmpr    CONDITION $0 ~eq
+    branch  ~+1 ~eq
+        pshi    AC_ASSERT_FAILED
+        call    _assert_fail_ac
+
+    psh     CONDITION
+    ret
