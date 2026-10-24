@@ -1,0 +1,248 @@
+; ***********************************************************
+; *                                                         *
+; * (c) 2025, JoBe                                          *
+; *                                                         *
+; * 8-Bit Disk Driver, with support for up to 64b Addresses *
+; ***********************************************************
+
+
+; MIT License
+; Copyright (c) 2025, JoBe
+
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to deal
+; in the Software without restriction, including without limitation the rights
+; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+; copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+
+; The above copyright notice and this permission notice shall be included in all
+; copies or substantial portions of the Software.
+
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+; SOFTWARE.
+
+
+
+; Note that all indents should be 4 spaces.
+; -----------------------------------------
+
+
+.entry 0x0000 ; TODO
+
+
+.use "../vars.jasm"
+
+
+.define OUT                                             &1
+.define OUTD                                            OUT
+.define OUTA                                            OUT
+.define OUTI                                            &3
+.define IND                                             &2
+
+
+; Instructions
+; ------------
+
+
+; +-------------------------+-----------+-----------+
+; | Instruction / Category  | Range     | Used      |
+; +-------------------------+-----------+-----------+
+; | noop, execution policy  | 0x00-0x07 | 0x00-0x00 |
+; | config                  | 0x08-0x1F | 0x08-0x08 |
+; | GET                     | 0x20-0x3F | 0x20-0x20 |
+; | SET                     | 0x40-0x5F | 0x40-0x40 |
+; | <unused>                | 0x60-0xEF | -         |
+; | EXECUTION               | 0xF0-0xFF | 0xFF-0xFF |
+; +-------------------------+-----------+-----------+
+
+
+.define I_BYTES                                         0x08
+.define I_MAX_BYTES_SIZE                                0x09
+.define I_GET                                           0x20
+.define I_SET                                           0x40
+.define EXECUTE                                         0xFF
+
+.define STD_SIZE                                        0x01
+.define MAX_SIZE                                        0x04 ; 0x40 Bits (64)
+
+.define ADDR_L                                          TMP0
+.define ADDR_H                                          TMP1
+.define OFFSET_L                                        TMP2
+.define OFFSET_H                                        TMP3
+.define ADDR                                            TMP4
+
+
+.def _setup_hook_
+    ; Set MAX_BYTES_SIZE
+    pout    I_MAX_BYTES_SIZE 0x01 OUTI
+    pout    MAX_SIZE 0x01 OUTD
+    pout    EXECUTE 0x01 OUTI
+    ; Set STD_BYTES_SIZE
+    pout    I_BYTES 0x01 OUTI
+    pout    STD_SIZE 0x01 OUTD
+    pout    EXECUTE 0x01 OUTI
+    ret
+
+
+.def get_req_size
+    ldi     0x__ TMP0
+    psh     TMP0
+    ret
+
+
+; Entry point
+.def load
+    ; Add following hooks:
+    ;   _setup_hook_
+    ;   _end_hook_
+    ;   _reset_hook_
+
+    ; Start address
+    pop     TMP1
+    pop     TMP0 ; 0x02
+
+    ; Our location
+    pop     LOC_H
+    pop     LOC_L
+
+    ; TODO: IDK abt the hooks, check their validity ngl
+
+    ; _setup_hook_
+    rpre    TMP0 TMP1 0x00
+    ; rldi    ? 0x00 0x00
+    rpre    TMP0 TMP1 0xFF
+    ; rldi    ? 0x00 0x00
+
+    addi    0x01 TMP1 TMP1
+
+    ; _end_hook_
+    rpre    TMP0 TMP1 0x00
+    ; rldi    ? 0x00 0x00
+    rpre    TMP0 TMP1 0xFF
+    ; rldi    ? 0x00 0x00
+
+    addi    0x01 TMP1 TMP1
+
+    ; _reset_hook_
+    rpre    TMP0 TMP1 0x00
+    ; rldi    ? 0x00 0x00
+    rpre    TMP0 TMP1 0xFF
+    ; rldi    ? 0x00 0x00
+
+
+.def _reset_bytes_size
+    ; TODO
+    ret
+
+
+.def get_addr
+    pop     ADDR_L
+    pout    I_GET 0x01 OUTI
+    pout    ADDR_L OUTA
+    pout    EXECUTE 0x01 OUTI
+    pin     TMP0
+
+    psh     TMP0
+    ret
+
+
+.def get_addr_offset
+    pop     ADDR_L
+    pop     OFFSET_L
+    pout    I_BYTES 0x01 OUTI
+    pout    0x02 0x01 OUTD
+    pout    EXECUTE 0x01 OUTI
+
+    ; Overflow-robust Addition
+    add     ADDR_L OFFSET_L ADDR_L
+    lflgre  ~of ADDR_H
+
+    pout    I_GET 0x01 OUTI
+    pout    ADDR_L OUTD
+    pout    ADDR_H OUTD
+    pout    EXECUTE 0x01 OUTI
+    pin     TMP0
+
+    ; Reset to STD_SIZE
+    pout    I_BYTES 0x01 OUTI
+    pout    STD_SIZE 0x01 OUTD
+    pout    EXECUTE 0x01 OUTI
+
+    psh     TMP0
+    ret
+
+
+.def get_addr_16
+    pop     ADDR_H
+    pop     ADDR_L
+    pout    I_BYTES 0x01 OUTI
+    pout    0x02 0x01 OUTD
+    pout    EXECUTE 0x01 OUTI
+
+    pout    I_GET 0x01 OUTI
+    pout    ADDR_L OUTD
+    pout    ADDR_H OUTD
+    pout    EXECUTE 0x01 OUTI
+    pin     TMP0
+
+    ; Reset to STD_SIZE
+    pout    I_BYTES 0x01 OUTI
+    pout    STD_SIZE 0x01 OUTD
+    pout    EXECUTE 0x01 OUTI
+
+    psh     TMP0
+    ret
+
+
+.def get_addr_16_offset
+    pop     ADDR_H
+    pop     ADDR_L
+    pout    I_BYTES 0x01 OUTI
+    pout    0x03 0x01 OUTD
+    pout    EXECUTE 0x01 OUTI
+
+
+.def get_addr_bytes
+    ; TODO
+    ret
+
+
+.def get_addr_bytes_offset
+    ; TODO
+    ret
+
+
+.def set_addr
+    ; TODO
+    ret
+
+
+.def set_addr_offset
+    ; TODO
+    ret
+
+
+.def set_addr_16
+    ; TODO
+    ret
+
+
+.def set_addr_16_offset
+    ; TODO
+    ret
+
+
+.def set_addr_bytes
+    ; TODO
+    ret
+
+
+.def set_addr_bytes_offset
+    ; TODO
+    ret
