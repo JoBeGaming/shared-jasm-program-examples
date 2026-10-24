@@ -1,0 +1,67 @@
+; NOTE: THIS IS VERY OLD AND SHIT CODE. ONLY THING I CHANGED WAS REMOVING SOME RANDOM AHH COMMENTS AND TURNING `incr a b` into `addi a 0x01 b`.
+
+.define size                    stack_pop_temporary0
+.define maximum                 stack_pop_temporary1
+.define start                   stack_pop_temporary2
+.define current                 temporary_1
+
+
+; Note that this only works for block-sizes up to
+; 256 Bytes (or 2 ** 8 Bytes). For everything else,
+; e.g. larger block-sizes, use the API provided in
+; _memory_extras.jasm.
+.def _malloc8                                                                                       ; Args: size (pointer8), maximum (pointer8), start (pointer8) -> pointer8
+    pop     size
+    pop     maximum
+    pop     start
+
+    stg     true i0 pc_offset_mode
+    stg     true i0 ram_offset_register
+
+    ; Useful lateron, where we can simplify an
+    ; `if start + 1 == maximum` to some
+    ; `start == maximum` to optimize the hot-loop.
+    subi    0x01 maximum maximum
+
+    cmpr    start maximum ~gte
+    branch  error ~gte ; Error
+
+    .def l1
+        ; Else:
+        ; Make this only a lod
+        rpre    start r0 r0
+        lod     @0 @0 current
+        add     start current start
+        cmpr    current r0 ~on
+        branch  i i0 ~on ; Branch to start += 1 part
+            ; Else:
+            cmpr    current maximum ~neq
+            branch  i i0 ~neq
+                ; Else:
+                str     current @0 size
+                addi    current 0x01 current
+                psh     current
+                ret
+            cmpr start
+
+        addi current 0x01 current
+        jmp l1
+
+
+    ; Raise the Error
+    .def error
+        ;psh #"Too little memory left"
+        ;call memory_error_new
+        ret
+
+    ;while start <= maximum - 1:
+    ;    start += memory[start]
+    ;    if memory[start] == 0:
+    ;        if start == maximum:
+    ;            raise MemoryError("Too little memory left")
+
+    ;        memory[start] = size
+    ;        return start + 1
+    ;    start += 1
+
+    ;raise MemoryError("Too little memory left")
