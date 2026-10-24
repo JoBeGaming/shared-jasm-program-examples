@@ -1,0 +1,115 @@
+; Following attributes exist:
+; - uint16 size,
+; - bool free,
+; - uint24 next
+; Because the block cannot be in the current block,
+; we know that
+; 0x000000 - 0x000001 a.size
+; 0x000002 - 0x000002 a.free
+; 0x000003 - 0x000005 a.next
+
+.use <stdbool.jasm>
+
+.use "../_jasmos.jasm"
+.use "./mem_utils.jasm"
+
+
+#IF JASM_OS_8__DO_BANKS != 0x01
+    #ERROR "Cannot use block-allocation with no banks used"
+
+
+#IF !defined(__JASM_OS_M_BLOCK_ALLOC)
+    #DEFINE __JASM_OS_M_BLOCK_ALLOC
+
+    .define JASM_OS_8__BANKS                                               0xff ; +1
+
+    ; +1
+    .define JASM_OS_8__BANK_SIZE                                         0xffff
+
+    .define JASM_OS_8__B_ALLOC_BLOCK_SIZE_O                                0x00
+    .define JASM_OS_8__B_ALLOC_BLOCK_FREE_O                                0x02
+    .define JASM_OS_8__B_ALLOC_BLOCK_NEXT_O                                0x03
+
+    .define JASM_OS_8__B_ALLOC_BLOCK_OVERHEAD                              0x06
+
+    ; 0x100 * 0x06 = 0x0600
+    ;                  LLHH NO WHAT THE FUCK ITS THE OTHER WAY AROUND, NO?
+    .define JASM_OS_8__N_BANKS_HEADER_TABLE_SIZE                         0x0600
+
+    .define _preferred_bank_l                                               @00
+    .define _preferred_bank_h                                               @50
+
+    ; Bank 0 is the default preferred bank.
+    .define JASM_OS_8__DEFAULT_P_BANK_ID                                   0x00
+
+    .define _banks_header_l_l                                               @00
+    .define _banks_header_l_h                                               @51
+    .define _banks_header_h_l                                               @00
+    .define _banks_header_h_h                                               @52
+
+
+    .def init_alloc
+        pshi    JASM_OS_8__DEFAULT_P_BANK_ID
+        call    _assert_or_switch_bank
+
+        rldi    JASM_OS_8__DEFAULT_P_BANK_ID _preferred_bank_l _preferred_bank_h
+
+        ; Try to use JASM_OS_8__DEFAULT_P_BANK_ID
+        pshi    JASM_OS_8__DEFAULT_P_BANK_ID
+        pshi    JASM_OS_8__N_BANKS_HEADER_TABLE
+        call    _alloc_system_inbank
+
+        pop     TMP0
+        str     TMP0 _banks_header_l_l _banks_header_l_h
+        pop     TMP0
+        str     TMP0 _banks_header_h_l _banks_header_h_h
+
+        ; No matter the preferred bank, always start at 0x00.
+        ldi     0x00 TMP0
+        ldi     JASM_OS_8__BANKS TMP1
+        call    _init_l1
+
+
+    .def _init_l1
+        cmpr    TMP0 TMP1 ~eq
+        branch  +4 ~eq
+            addi    0x01 TMP0 TMP0
+            switch  TMP0
+            call    _init_bank
+            call    _init_l1
+        ret
+
+
+    .def _init_bank
+        ; Size = BANK_SIZE - OVERHEAD
+        rldi    0xff @00 @00
+        rldi    0xf9 @00 @01
+        rldi    true @00 @02
+
+        ; NULL-like
+        rldi    0x00 @00 @03
+        rldi    0x00 @00 @04
+        rldi    0x00 @00 @05
+        ret
+
+
+    .def balloc
+        pop     TMP1
+        pop     TMP0
+
+        cmpr    TMP0 r0 ~neq
+        branch  +6 ~neq
+            cmpr    TMP1 r0 ~neq
+            branch  +4 ~neq
+                ; size is given as 0x0000
+                pshi    0x00
+                pshi    0x00
+                pshi    0x00
+                ret
+
+
+
+
+    pshi    init_alloc.0:7
+    pshi    init_alloc.8:15
+    call    _register_startup_fn
