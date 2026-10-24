@@ -1,0 +1,99 @@
+.define P_START_L                                                           @00
+.define P_START_H                                                           @01
+.define M_START_L                                                           @00
+.define M_START_H                                                           @02
+
+
+.define program_counter                                                      r1
+.define memory_pointer                                                       r2
+.define bracket_counter                                                      r3
+.define copy                                                                 r4
+
+; Stores the content of the current cell / current instruction.
+.define instruction                                                          r5
+.define cell                                                                 r6
+
+; Temporary for the instruction in l1/l2.
+.define instr_tmp                                                            r7
+
+; Ports
+.define input                                                                &1
+.define output                                                               &1
+
+
+; ASCII
+.define plus                                                               0x2B
+.define comma                                                              0x2C
+.define minus                                                              0x2D
+.define dot                                                                0x2E
+.define less_than                                                          0x3C
+.define greater_than                                                       0x3E
+.define open_bracket                                                       0x5B
+.define closed_bracket                                                     0x5D
+
+
+.def do_plus
+    addi    0x01 cell cell
+    ret
+
+
+.def do_comma
+    pin     input cell
+    ret
+
+
+.def do_minus
+    subi    0x01 cell cell
+    ret
+
+
+.def do_dot
+    pout    cell output
+    ret
+
+
+.def do_less_than
+    ; i i r
+    rpre    M_START_L M_START_H memory_pointer
+    str     cell @00 @00
+    subi    0x01 memory_pointer memory_pointer
+    rpre    M_START_L M_START_H memory_pointer
+    lod     @00 @00 cell
+    ret
+
+
+.def do_greater_than
+    rpre    M_START_L M_START_H memory_pointer
+    str     cell @00 @00
+    addi    0x01 memory_pointer memory_pointer
+    rpre    M_START_L M_START_H memory_pointer
+    lod     @00 @00 cell
+    ret
+
+
+.def do_opening_bracket
+    addi    0x01 bracket_counter bracket_counter
+    cmpr    cell r0 ~neq
+    branch  +1 ~neq
+        call    jump_next_matching_close
+    ret
+
+
+.def do_closing_bracket
+    subi    0x01 bracket_counter bracket_counter
+    cmpr    cell r0 ~eq
+    branch  +1 ~eq
+        call    jump_next_matching_open
+    ret
+
+
+.def jump_next_matching_close
+    addi    0x01 program_counter cpy
+    call    l1
+    ret
+
+
+.def jump_next_matching_open
+    subi    0x01 program_counter cpy
+    call    l2
+    ret
