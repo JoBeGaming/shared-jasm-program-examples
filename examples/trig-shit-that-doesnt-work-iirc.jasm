@@ -1,0 +1,603 @@
+#ISA 2.4.6e
+
+; Make all registers be 16b where each register at 0x00 - 0xff
+; is a 16b register with 2 phy. registers (PHR) being used per value.
+; The format in which the 16b integers are stored is BE.
+; This also adds #lo and #hi as macros.
+#EXT x-bitwidth16
+
+; Make rpre accept rrr format for arguments.
+#EXT x-rpre_rrr
+
+; Add immediate overloads for bitwise operations and, or, xor, nand
+; nor, xnor as well as lsh, rsh, alsh, arsh, alshr, arshr.
+#EXT x-bimm
+
+; Add idiv instruction.
+#EXT x-idiv
+
+
+; Assume degrees given, with modulo 360 applied.
+; The sign has also already been captured.
+;
+; First, we have to normalize the quadrants I to IV,
+; so we 'only' have to use 91 (182) values.
+;
+;            90°
+;     Q2      |      Q1
+;             |
+;             |
+; 180° -------+------- 0°
+;             |
+;             |
+;     Q3      |      Q4
+;            270°
+;
+; The quadrant can be calulated using the following formula:
+;     quadrant = deg // 90°
+; Note: We have to use integer division here, as if we were
+;       to use 'normal' division with floats, we'd not be able
+;       to later use integers in the sign function, nor would
+;       modulo 2 for an even check work.
+;
+; Next we calculate the offset, using the following formula:
+;     offset = 90 * (quadrant % 2)
+;
+; Here following cases are produced:
+;
+;     quad. offset
+;     I     0°
+;     II    90°
+;     III   0°
+;     IV    90°
+;
+; Next we index the sine LUT, using the index via:
+;     abs(offset - (deg % 90))
+;
+; Therefore the indexing process uses:
+;     idx = abs((90 * (deg // 90° % 2)) - (deg % 90))
+;
+; The sine alternates ("switches") between 1 and -1,
+; while our table only contains positive values. We
+; have to optionally invert the result. Follow cases
+; can occour where the sine curve is above or below 0,
+; depending on the quadrant:
+;
+;     quad. sign factor
+;     I     +    +1
+;     II    +    +1
+;     III   -    -1
+;     IV    -    -1
+;
+; This factor can be calculated using the formula:
+;     1 - 2 * (quadrant // 2)
+;
+; Where the quadrants are zero-indexed, as shown
+; above.
+;
+; The formula can be turned into one using only bitwise
+; shifts, as the factor 2 and the divisor 2 are both powers
+; of 2 (2 ** n, n = 1). The formula would then be:
+;     1 - ((quadrant >> 1) << 1)
+;
+; As ((quadrant >> 1) << 1) has the single purpose of
+; getting rid of the 0th bit of quadrant (2 ** 0 = 1)
+; so some quadrant >= 2 can easily be calculated for
+; quadrant: 0..3, we can simply ignore all other bits,
+; as any bit above the 1st is 0 by definiton, by using
+; bitwise AND. The formula can therefore be simplified
+; to:
+;     1 - (q & 0x02)
+; This translates from roughly  instructions (see below)
+; to about 3, ignoring any handling of given arguments.
+;
+; Code before (optimized):
+;
+;     ldi      0x02 tmp
+;     idiv     quad tmp quad  ; We can re-use quadrant, as this is the last step of sin/cos using the quadrant.
+;     mult     quad tmp quad
+;     ldi      0x01 tmp
+;     sub      tmp quad quad
+;
+; Code after (optimized):
+;
+;     ; Requires EXT x-bimm
+;     andi     quad 0x02 quad ; We can re-use quadrant, as this is the last step of sin/cos using the quadrant.
+;     neg      quad quad
+;     addi     quad 0x01 quad ; We use addi -q 0x01, as q - c = -q + c. This allows us to use one less register.
+;
+; Alternatively, the last two instructions can be done
+; via sub (like usual), which would however require the
+; usage of another register, as there exists only a subi
+; for <op-b> : u8, but no subi with <op-a> : u8 / i8.
+; Addition is the only non-bitwise operation for which we
+; have an IMM version by default, as the associativity is
+; only given for addition and multiplication.
+;
+;     ldi      0x01 tmp
+;     subi     quad 0x01 quad
+;
+;
+; The final formula is using the sine gotten via the offset
+; index, then applying the sign as well as the user_sign:
+;
+;     usersign * sign * sine[abs(offset) - (deg % 90))]
+;
+;
+; The formula can however be simplified once more, as we
+; internally use Q7 (or Q15) for fixed point values, which
+; have the same type as the return type. This way, the Python
+; equivalent is a bit more messy, while the JASM version stays
+; clean.
+;
+;
+; The user-sign can now be captured using AND with the MSB, so
+; 0x8000 for Q15, or 0x80 for Q7. Therefore we get:
+;     sign = deg & 0x8000
+;
+; The steps after capturing the sign stay the same, until
+; we calculate the new sign. We still detect the quadrant
+; being bigger or equal to idx = 2, with quadrant AND 0x2,
+; but we now shift the result of this expression (0 or 1)
+; 0xe places left for Q15, or 0x6 places using Q7:
+;     ssign = (quadrant & 0x02) << 0x0e
+;
+; Finally the user-sign and newly calculated sine-sign are
+; combined. Generally -n * -m = m * n for m, n >= 0. With
+; potentially both signs being given as 1 or -1, this gives
+; us user-sign: 0..1 (0 = positive, 1 = negative) for the
+; sign bit, and sine-sign: 0..1 (0 = positive, 1 = negative).
+; Therefore we can create a logic table:
+;
+; u: user-sign
+; s: sine-sign
+; o: output
+;
+;     u s o
+;     0 0 0
+;     0 1 1
+;     1 0 1
+;     1 1 0
+;
+; This behaviour can be replicated perfectly using XOR.
+; Therefore the formula for the sign application becomes:
+;     usersign ^= (quadrant & 0x02) << 0x0e
+;     return result | usersign
+;
+; For Q15 systems, with a LSH by 0x06 on Q7 systems.
+; We can then use following assembly code:
+;
+;     ; Requires EXT x-bimm
+;     andi     quad 0x02 quad ; We can re-use quadrant, as this is the last step of sin/cos using the quadrant.
+;     lshi     quad 0x0e quad
+;
+; This only requires 2 instructions when optimized.
+; Merging the two signs is also quite simple:
+;
+;     xor      sign quad sign
+;
+; Now we can apply them:
+;
+;     or       result sign result
+;     psh      #lo(result)
+;     psh      #hi(result)
+;     ret
+
+
+; Table always lives at 0x0400 (0b0000 0100 0000 0000)
+.define SIN_LUT_BASE_H          @40
+.define SIN_LUT_BASE_L          @00
+
+.define SIN_LUT_BASE_H1         SIN_LUT_BASE_H
+.define SIN_LUT_BASE_L1         SIN_LUT_BASE_L + @5B
+
+
+; Note: When full 16b memory mode is activated, i.e. the
+;       register-set is NOT split between the two, all
+;       auto($8) should resolve to auto($16).
+
+.define sin_addr_h              auto($8)
+.define sin_addr_l              auto($8)
+.define sin_addr_h1             auto($8)
+.define sin_addr_l1             auto($8)
+.define lut_offset              auto($8)
+
+.define lut_rtv8                auto($8)
+.define lut_rtv16               auto($16)
+
+; Could be part of e.g. sign at LSB too, but we
+; don't have to optimize the register usage here.
+.define q_isev                  auto($8)
+
+.define deg                     auto($16)
+.define sign                    auto($16)
+.define c90                     auto($8)
+.define quad                    auto($8)
+.define offset                  lut_offset
+
+
+; Sine
+;
+; Note: If a degr. happens to exceed 360°,
+;       a mod 360 will normalize it first.
+; Note: If a degr. happens to be negative,
+;       the sign of the result will be
+;       flipped (-1 * deg).
+;
+; Arguments:
+;     deg (u16): Degrees of which we want the sine.
+; Returns:
+;     u8: Sine of the given degrees. This is returned in
+;         Q7 format.
+; Clutters:
+;     deg
+;     sign
+;     c90
+;     quad
+;     q_isev
+;     offset
+;     lut_offset
+;     lut_rtv8
+;     MAR
+.def sin8
+    pop     #lo(deg)
+    pop     #hi(deg)
+
+    ; Capture user-sign.
+    andi    deg 0x8000 sign                     ; 16b
+
+    ; deg %= 360.
+    mod     deg 0x0168 deg                      ; 16b
+
+    ; Calculate quadrant.
+    ldi     0x5A c90
+    idiv    #lo(deg) c90 quad                   ; 8b
+
+    ; Check if quad is even. q_isev is either 0 or 1.
+    andi    quad 0x01 q_isev                    ; 8b
+
+    ; Calculate offset from q_isev. Either 0 or 90.
+    mult    q_isev c90 offset                   ; 8b
+
+    ; Swap if o < nd.
+    cmpr    offset #lo(deg) ~lt
+    cswp    offset #lo(deg) ~lt
+
+    ; Offset: u16, but offset: 0..90
+    sub     offset #lo(deg) offset              ; 8b
+
+    psh     offset
+    call    _getlutv8
+
+    ; Result is in lut_rtv8
+
+    ; Calculate sine-sign.
+    ; We can re-use quadrant, as this is the last step
+    ; of sin/cos using the quadrant.
+    andi     quad 0x02 quad                     ; 8b
+    lshi     quad 0x06 quad                     ; 8b
+
+    ; Have sign fit 8b output.
+    ; This is not required in the 16b version.
+    rshi     sign 0x08 sign                     ; 16b
+
+    ; Combine both signs.
+    xor      #lo(sign) quad quad                ; 8b
+
+    or       lut_rtv8 quad lut_rtv8             ; 8b
+    psh      lut_rtv8
+    ret
+
+
+; Sine
+;
+; Note: If a degr. happens to exceed 360°,
+;       a mod 360 will normalize it first.
+; Note: If a degr. happens to be negative,
+;       the sign of the result will be
+;       flipped (-1 * deg).
+;
+; Arguments:
+;     deg (u16): Degrees of which we want the sine.
+; Returns:
+;     u16: Sine of the given degrees. This is returned in
+;          Q15 format.
+; Clutters:
+;     deg
+;     sign
+;     c90
+;     quad
+;     q_isev
+;     offset
+;     lut_offset
+;     lut_rtv16
+;     MAR
+.def sin16
+    pop     #lo(deg)
+    pop     #hi(deg)
+
+    ; Capture user-sign.
+    andi    deg 0x8000 sign                     ; 16b
+
+    ; deg %= 360.
+    mod     deg 0x0168 deg                      ; 16b
+
+    ; Calculate quadrant.
+    ldi     0x5a c90
+    idiv    #lo(deg) c90 quad                   ; 8b
+
+    ; Check if quad is even. q_isev is either 0 or 1.
+    andi    quad 0x01 q_isev                    ; 8b
+
+    ; Calculate offset from q_isev. Either 0 or 90.
+    mult    q_isev c90 offset                   ; 8b
+
+    ; Swap if o < nd.
+    cmpr    offset #lo(deg) ~lt
+    cswp    offset #lo(deg) ~lt
+
+    ; Offset: u16, but offset: 0..90
+    sub     offset #lo(deg) offset              ; 8b
+
+    psh     offset
+    call    _getlutv16
+
+    ; Result is in lut_rtv16
+
+    ; Calculate sine-sign.
+    ; We can re-use offset, as the last step using it
+    ; within sin/cos is over.
+    andi     quad 0x02 quad                     ; 8b
+    lshi     quad 0x0E offset                   ; 16b
+
+    ; Combine both signs.
+    xor      sign offset sign                   ; 16b
+
+    or       lut_rtv16 sign lut_rtv16           ; 16b
+    psh      lut_rtv16
+    ret
+
+
+
+; Internal function to get LUT value.
+;
+; Arguments:
+;     lut_offset (u8): LUT offset from 0..MAX.
+; Returns:
+;     *lut_rtv8 (u8): Unsigned 8b Integer. For floats,
+;                     use Q7 or Q15 with 16b Integers.
+;                     or 16b support, see _getlutv16.
+; Clutters:
+;     lut_offset
+;     lut_rtv8
+;     MAR
+.def _getlutv8
+    pop     lut_offset
+    rpre    sin_addr_h sin_addr_l lut_offset
+    lod     @00 @00 lut_rtv8
+    ret
+
+
+; Internal function to get LUT value.
+;
+; Arguments:
+;     lut_offset (u8): LUT offset from 0..MAX.
+; Returns:
+;     *lut_rtv16 (u16): Unsigned 16b Integer. For floats,
+;                       use Q15 or Q7 with 8b Integers.
+;                       For 8b support, see _getlutv8.
+; Clutters:
+;     lut_offset
+;     lut_rtv16
+;     MAR
+.def _getlutv16
+    pop     lut_offset
+    rpre    sin_addr_h sin_addr_l lut_offset
+    lod     @00 @00 #lo(lut_rtv16)
+    rpre    sin_addr_h1 sin_addr_l1 lut_offset
+    lod     @00 @00 #hi(lut_rtv16)
+    ret
+
+
+; Initiate the LUT.
+; Note: This should only be called once
+;       at the beginning of the code.
+;
+; Arguments:
+; Returns:
+; Clutters:
+;     sin_addr_h
+;     sin_addr_l
+;     @0400..@04B4
+;     MAR
+.def init_lut
+    ldi     SIN_LUT_BASE_H sin_addr_h
+    ldi     SIN_LUT_BASE_L sin_addr_l
+    ldi     SIN_LUT_BASE_H1 sin_addr_h1
+    ldi     SIN_LUT_BASE_L1 sin_addr_l1
+
+    ; Low section (91 items)
+    rldi    0x00 @04 @00
+    rldi    0x3C @04 @01
+    rldi    0x78 @04 @02
+    rldi    0xB3 @04 @03
+    rldi    0xEE @04 @04
+    rldi    0x28 @04 @05
+    rldi    0x61 @04 @06
+    rldi    0x99 @04 @07
+    rldi    0xD0 @04 @08
+    rldi    0x06 @04 @09
+    rldi    0x3A @04 @0A
+    rldi    0x6C @04 @0B
+    rldi    0x9D @04 @0C
+    rldi    0xCB @04 @0D
+    rldi    0xF7 @04 @0E
+    rldi    0x21 @04 @0F
+    rldi    0x48 @04 @10
+    rldi    0x6C @04 @11
+    rldi    0x8E @04 @12
+    rldi    0xAC @04 @13
+    rldi    0xC7 @04 @14
+    rldi    0xDF @04 @15
+    rldi    0xF3 @04 @16
+    rldi    0x03 @04 @17
+    rldi    0x10 @04 @18
+    rldi    0x18 @04 @19
+    rldi    0x1D @04 @1A
+    rldi    0x1C @04 @1B
+    rldi    0x18 @04 @1C
+    rldi    0x0E @04 @1D
+    rldi    0x00 @04 @1E
+    rldi    0xED @04 @1F
+    rldi    0xD4 @04 @20
+    rldi    0xB7 @04 @21
+    rldi    0x94 @04 @22
+    rldi    0x6B @04 @23
+    rldi    0x3D @04 @24
+    rldi    0x08 @04 @25
+    rldi    0xCE @04 @26
+    rldi    0x8E @04 @27
+    rldi    0x47 @04 @28
+    rldi    0xFA @04 @29
+    rldi    0xA6 @04 @2A
+    rldi    0x4C @04 @2B
+    rldi    0xEB @04 @2C
+    rldi    0x82 @04 @2D
+    rldi    0x13 @04 @2E
+    rldi    0x9D @04 @2F
+    rldi    0x1F @04 @30
+    rldi    0x9A @04 @31
+    rldi    0x0E @04 @32
+    rldi    0x7A @04 @33
+    rldi    0xDE @04 @34
+    rldi    0x3A @04 @35
+    rldi    0x8E @04 @36
+    rldi    0xDA @04 @37
+    rldi    0x1E @04 @38
+    rldi    0x5A @04 @39
+    rldi    0x8D @04 @3A
+    rldi    0xB8 @04 @3B
+    rldi    0xDA @04 @3C
+    rldi    0xF4 @04 @3D
+    rldi    0x04 @04 @3E
+    rldi    0x0D @04 @3F
+    rldi    0x0C @04 @40
+    rldi    0x02 @04 @41
+    rldi    0xEF @04 @42
+    rldi    0xD3 @04 @43
+    rldi    0xAE @04 @44
+    rldi    0x80 @04 @45
+    rldi    0x48 @04 @46
+    rldi    0x07 @04 @47
+    rldi    0xBC @04 @48
+    rldi    0x68 @04 @49
+    rldi    0x0B @04 @4A
+    rldi    0xA3 @04 @4B
+    rldi    0x33 @04 @4C
+    rldi    0xB8 @04 @4D
+    rldi    0x34 @04 @4E
+    rldi    0xA6 @04 @4F
+    rldi    0x0E @04 @50
+    rldi    0x6D @04 @51
+    rldi    0xC1 @04 @52
+    rldi    0x0C @04 @53
+    rldi    0x4C @04 @54
+    rldi    0x83 @04 @55
+    rldi    0xB0 @04 @56
+    rldi    0xD3 @04 @57
+    rldi    0xEC @04 @58
+    rldi    0xFB @04 @59
+    rldi    0xFF @04 @5A
+
+    ; High section (91 items)
+    rldi    0x00 @04 @5B
+    rldi    0x02 @04 @5C
+    rldi    0x04 @04 @5D
+    rldi    0x06 @04 @5E
+    rldi    0x08 @04 @5F
+    rldi    0x0B @04 @60
+    rldi    0x0D @04 @61
+    rldi    0x0F @04 @62
+    rldi    0x11 @04 @63
+    rldi    0x14 @04 @64
+    rldi    0x16 @04 @65
+    rldi    0x18 @04 @66
+    rldi    0x1A @04 @67
+    rldi    0x1C @04 @68
+    rldi    0x1E @04 @69
+    rldi    0x21 @04 @6A
+    rldi    0x23 @04 @6B
+    rldi    0x25 @04 @6C
+    rldi    0x27 @04 @6D
+    rldi    0x29 @04 @6E
+    rldi    0x2B @04 @6F
+    rldi    0x2D @04 @70
+    rldi    0x2F @04 @71
+    rldi    0x32 @04 @72
+    rldi    0x34 @04 @73
+    rldi    0x36 @04 @74
+    rldi    0x38 @04 @75
+    rldi    0x3A @04 @76
+    rldi    0x3C @04 @77
+    rldi    0x3E @04 @78
+    rldi    0x40 @04 @79
+    rldi    0x41 @04 @7A
+    rldi    0x43 @04 @7B
+    rldi    0x45 @04 @7C
+    rldi    0x47 @04 @7D
+    rldi    0x49 @04 @7E
+    rldi    0x4B @04 @7F
+    rldi    0x4D @04 @80
+    rldi    0x4E @04 @81
+    rldi    0x50 @04 @82
+    rldi    0x52 @04 @83
+    rldi    0x53 @04 @84
+    rldi    0x55 @04 @85
+    rldi    0x57 @04 @86
+    rldi    0x58 @04 @87
+    rldi    0x5A @04 @88
+    rldi    0x5C @04 @89
+    rldi    0x5D @04 @8A
+    rldi    0x5F @04 @8B
+    rldi    0x60 @04 @8C
+    rldi    0x62 @04 @8D
+    rldi    0x63 @04 @8E
+    rldi    0x64 @04 @8F
+    rldi    0x66 @04 @90
+    rldi    0x67 @04 @91
+    rldi    0x68 @04 @92
+    rldi    0x6A @04 @93
+    rldi    0x6B @04 @94
+    rldi    0x6C @04 @95
+    rldi    0x6D @04 @96
+    rldi    0x6E @04 @97
+    rldi    0x6F @04 @98
+    rldi    0x71 @04 @99
+    rldi    0x72 @04 @9A
+    rldi    0x73 @04 @9B
+    rldi    0x74 @04 @9C
+    rldi    0x74 @04 @9D
+    rldi    0x75 @04 @9E
+    rldi    0x76 @04 @9F
+    rldi    0x77 @04 @A0
+    rldi    0x78 @04 @A1
+    rldi    0x79 @04 @A2
+    rldi    0x79 @04 @A3
+    rldi    0x7A @04 @A4
+    rldi    0x7B @04 @A5
+    rldi    0x7B @04 @A6
+    rldi    0x7C @04 @A7
+    rldi    0x7C @04 @A8
+    rldi    0x7D @04 @A9
+    rldi    0x7D @04 @AA
+    rldi    0x7E @04 @AB
+    rldi    0x7E @04 @AC
+    rldi    0x7E @04 @AD
+    rldi    0x7F @04 @AE
+    rldi    0x7F @04 @AF
+    rldi    0x7F @04 @B0
+    rldi    0x7F @04 @B1
+    rldi    0x7F @04 @B2
+    rldi    0x7F @04 @B3
+    rldi    0x7F @04 @B4
+    rldi    0x7F @04 @B5
