@@ -1,0 +1,254 @@
+; Brainf*ck interpreter in JAsm
+
+; Assume program from 0x0100 - 0x01FF
+; We stop at 0x01FF.
+; The "tape" memory has a size of 256B,
+; from 0x0200 - 0x2FF.
+
+; We also assume the program is valid, meaning all [ and ] are
+; matched correctly.
+
+.define P_START_L                                                           @01
+.define P_START_H                                                           @00
+
+.define M_START_L                                                           @02
+.define M_START_H                                                           @00
+
+.define program_counter                                                      r1
+.define instruction                                                          r2
+.define bracket_cnt                                                          r3
+.define memory_pointer                                                       r4
+.define cell                                                                 r5
+.define tmp0                                                                 r6
+.define tmp1                                                                 r7
+.define tmp2                                                                 r8
+
+.define input                                                                &1
+.define output                                                               &2
+
+; ASCII Symbols
+.define plus                                                               0x2B ; +
+.define comma                                                              0x2C ; ,
+.define minus                                                              0x2D ; -
+.define dot                                                                0x2E ; .
+.define less_than                                                          0x3C ; <
+.define greater_than                                                       0x3E ; >
+.define opening_loop                                                       0x5B ; [
+.define closing_loop                                                       0x5D ; ]
+
+.def do_plus
+    addi    0x01 cell cell
+    ret
+
+
+.def do_comma
+    pin     input cell
+    ret
+
+
+.def do_minus
+    subi    0x01 cell cell
+    ret
+
+
+.def do_dot
+    pout    cell output
+    ret
+
+
+.def do_less_than
+    ldi     M_START_L tmp0
+    ldi     M_START_H tmp1
+
+    ; Store previous cell
+    rpre    tmp0 tmp1 memory_pointer
+    str     cell @00 @00
+
+    subi    0x01 memory_pointer memory_pointer
+
+    ; Load new cell
+    rpre    tmp0 tmp1 memory_pointer
+    lod     @00 @00 cell
+    ret
+
+
+.def do_greater_than
+    ldi     M_START_L tmp0
+    ldi     M_START_H tmp1
+
+    ; Store previous cell
+    rpre    tmp0 tmp1 memory_pointer
+    str     cell @00 @00
+
+    addi    0x01 memory_pointer memory_pointer
+
+    ; Load new cell
+    rpre    tmp0 tmp1 memory_pointer
+    lod     @00 @00 cell
+    ret
+
+
+.def do_opening_loop
+    addi    0x01 bracket_cnt bracket_cnt
+    cmpr    cell r0 ~neq
+    branch  +1 ~neq
+        psh     bracket_cnt
+        ; This goes to the exact address of the
+        ; ], so the increment of the PC by one
+        ; still moves it one over.
+        call    jump_next_matching_close
+
+    ret
+
+
+.def do_closing_loop
+    subi    0x01 bracket_cnt bracket_cnt
+    cmpr    cell r0 ~eq
+    branch  +1 ~eq
+        ; This goes to the exact address of the
+        ; [, so the increment of the PC by one
+        ; still moves it one over.
+        call    jump_next_matching_open
+    ret
+
+
+.def jump_next_matching_close
+    psh     instruction
+    mov     program_counter tmp2
+    call    l1
+    pop     instruction
+    ret
+
+
+.def l1
+    ldi     P_START_L tmp0
+    ldi     P_START_H tmp1
+    rpre    tmp0 tmp1 tmp2
+    lod     @00 @00 instruction
+
+    ; ]
+    ldi     closing_loop tmp1
+    cmpr    instruction tmp1 ~neq
+    branch  +5 ~neq
+        subi    0x01 bracket_cnt bracket_cnt
+
+        cmpr    bracket_cnt r0 ~neq
+        branch  +2 ~neq
+            ; Is matching bracket
+            mov     tmp2 program_counter
+            ret
+
+    ; [
+    ldi     opening_loop tmp1
+    cmpr    instruction tmp1 ~neq
+    branch  +1 ~neq
+        addi    0x01 bracket_cnt bracket_cnt
+
+    addi    0x01 tmp2 tmp2
+    call    l1
+    ret
+
+
+.def jump_next_matching_open
+    psh     instruction
+    mov     program_counter tmp2
+    call    l1
+    pop     instruction
+    ret
+
+
+.def l2
+    ldi     P_START_L tmp0
+    ldi     P_START_H tmp1
+    rpre    tmp0 tmp1 tmp2
+    lod     @00 @00 instruction
+
+    ; [
+    ldi     opening_loop tmp1
+    cmpr    instruction tmp1 ~neq
+    branch  +5 ~neq
+        addi    0x01 bracket_cnt bracket_cnt
+
+        cmpr    bracket_cnt r0 ~neq
+        branch  +2 ~neq
+            ; Is matching bracket
+            mov     tmp2 program_counter
+            ret
+
+    ; ]
+    ldi     opening_loop tmp1
+    cmpr    instruction tmp1 ~neq
+    branch  +1 ~neq
+        addi    0x01 bracket_cnt bracket_cnt
+
+    ; Move backwards
+    subi    0x01 tmp2 tmp2
+    call    l2
+    ret
+
+
+.def mainloop
+    ldi     P_START_L tmp0
+    ldi     P_START_H tmp1
+    rpre    tmp0 tmp1 program_counter
+    lod     @00 @00 instruction
+
+    ; +
+    ldi     plus tmp0
+    cmpr    instruction tmp0 ~neq
+    branch  +1 ~neq
+        call    do_plus
+
+    ; ,
+    ldi     comma tmp0
+    cmpr    instruction tmp0 ~neq
+    branch  +1 ~neq
+        call    do_comma
+
+    ; -
+    ldi     minus tmp0
+    cmpr    instruction tmp0 ~neq
+    branch  +1 ~neq
+        call    do_minus
+
+    ; .
+    ldi     dot tmp0
+    cmpr    instruction tmp0 ~neq
+    branch  +1 ~neq
+        call    do_dot
+
+    ; <
+    ldi     less_than tmp0
+    cmpr    instruction tmp0 ~neq
+    branch  +1 ~neq
+        call    do_less_than
+
+    ; >
+    ldi     greater_than tmp0
+    cmpr    instruction tmp0 ~neq
+    branch  +1 ~neq
+        call    do_greater_than
+
+    ; [
+    ldi     opening_loop tmp0
+    cmpr    instruction tmp0 ~neq
+    branch  +1 ~neq
+        call    do_opening_loop
+
+    ; ]
+    ldi     closing_loop tmp0
+    cmpr    instruction tmp0 ~neq
+    branch  +1 ~neq
+        call    do_closing_loop
+
+    ldi     0xff tmp0
+    cmpr    program_counter tmp0 ~neq
+    branch  +1 ~neq
+        ret
+
+    addi    0x01 program_counter program_counter
+    call    mainloop
+    ret
+
+; [    [    [    ]    ]    ]
+; 0->1 1->2 2->3 3->2 2->1 1->0
