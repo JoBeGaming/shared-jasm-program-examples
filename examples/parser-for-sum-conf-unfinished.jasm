@@ -1,0 +1,117 @@
+.use <ascii.jasm>
+.use <math16.jasm>
+
+
+.define WHITESPACE                                                     ASCII_SP
+.define ASSIGNMENT_OP                                              ASCII_EQUALS
+.define COMMENT_0                                                 ASCII_HASHTAG
+.define COMMENT_1                                                       NEWLINE
+
+
+; --- Utilities ---
+
+; Take a pointer to a string and check wether it
+; matches the rules to be a valid identifier. If
+; it is, we return 0x01, otherwise 0x00.
+;
+; Uses PTR_H, PTR_L, CUR, TMP0
+.def is_ident
+    pop     ptr_h
+    pop     ptr_l
+
+    ; string[0] - string[n]. Last character is ASCII EOT,
+    ; which is 0x04.
+    rpre    ptr_l ptr_h 0x00
+    lod     @00 @00 cur
+
+    ; Lowercase character
+    ldi     ASCII_A_LOWER TMP0
+    cmpr    cur TMP0 ~lt
+    branch  +7 ~lt
+        ; Is GE 'a'.
+        ldi     ASCII_Z_LOWER TMP0
+        cmpr    cur TMP0 ~le
+        branch  +2 ~le
+            ; Bigger than 'z', so we fail.
+            pshi    0x00
+            ret
+
+        call    _is_ident_secondary
+        ret
+
+    ; Uppercase character
+    ldi     ASCII_A_UPPER TMP0
+    cmpr    cur TMP0 ~lt
+    branch  +7 ~lt
+        ; Is GE 'A'
+        ldi     ASCII_Z_UPPER TMP0
+        cmpr    cur TMP0 ~le
+        branch  +2 ~le
+            ; Bigger than 'Z', so we fail.
+            pshi    0x00
+            ret
+
+        call    _is_ident_secondary
+        ret
+
+    ldi     ASCII_UNDERSCORE TMP0
+    cmpr    cur TMP0 ~neq
+    branch  +2 ~neq
+        call    _is_ident_secondary
+        ret
+
+    pshi    0x00
+    ret
+
+
+#DEFINE AS __static__(
+    ; Internal. We use `ptr_h` and `ptr_l` here,
+    ; assuming `is_ident` as the only caller.
+    .def _is_ident_secondary
+        ; string[0] - string[n]. Last character is ASCII EOT,
+        ; which is 0x04.
+        psh     ptr_l
+        psh     ptr_h
+        call    inc_16
+        rpre    ptr_l ptr_h 0x00
+        lod     @00 @00 cur
+
+        ; Lowercase character
+        ldi     ASCII_A_LOWER TMP0
+        cmpr    cur TMP0 ~lt
+        branch  +7 ~lt
+            ; Is GE 'a'.
+            ldi     ASCII_Z_LOWER TMP0
+            cmpr    cur TMP0 ~le
+            branch  +2 ~le
+                ; Bigger than 'z', so we fail.
+                pshi    0x00
+                ret
+
+            call    _is_ident_secondary
+            ret
+
+        ; Uppercase character
+        ldi     ASCII_A_UPPER TMP0
+        cmpr    cur TMP0 ~lt
+        branch  +7 ~lt
+            ; Is GE 'A'
+            ldi     ASCII_Z_UPPER TMP0
+            cmpr    cur TMP0 ~le
+            branch  +2 ~le
+                ; Bigger than 'Z', so we fail.
+                pshi    0x00
+                ret
+
+            call    _is_ident_secondary
+            ret
+
+        ldi     ASCII_UNDERSCORE TMP0
+        cmpr    cur TMP0 ~neq
+        branch  +2 ~neq
+            call    _is_ident_secondary
+            ret
+
+        psh     0x00
+        ret
+)
