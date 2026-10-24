@@ -1,0 +1,294 @@
+; ************************************
+; *                                  *
+; * (c) 2025, JoBe                   *
+; *                                  *
+; * Basic 8-bit stack layout defined *
+; ************************************
+
+
+; MIT License
+; Copyright (c) 2025, JoBe
+
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to deal
+; in the Software without restriction, including without limitation the rights
+; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+; copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+
+; The above copyright notice and this permission notice shall be included in all
+; copies or substantial portions of the Software.
+
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+; SOFTWARE.
+
+
+
+; Note that all indents should be 4 spaces.
+; -----------------------------------------
+
+
+; --- Imports ---
+
+; Use _memory.malloc16with8offset_noendloc
+.use <memory.jasm>
+
+
+; Use _registers.free
+;.use "<registers>" ; Not file "registers", but stdlib entry
+
+
+; --- API ---
+
+; Stack are basically fixed size arrays.
+; We can construct stacks using either `new` when we provide a size,
+; or using the builtin `types.array` type for a dynamic size.
+
+
+; Object layout:
+;
+; [size][position][null * size]
+;
+; E.g.:
+; new(3) -> 0x02
+;
+; 0x00 0x01 0x02 0x03 0x04 0x05 0x06 0x07...
+; nul  ...  3    0    nul  nul  nul  ...
+;           ^^^^
+
+
+; TODO: FIX OFFSETS
+.define size                    stack_pop_temporary0
+.define position                r1 ;... ; TODO: SOME TEMP
+.define total_size              size
+.define base_location_pointer0  TMP0 ; TODO: OVERLAP WITH size
+.define base_location_pointer1  TMP1
+.define offset                  TMP2
+.define value                   r1 ;...
+
+
+.def new                                                                                            ; Args: size (int8) -> pointer16
+    pop     size
+
+    ; Calculate total size.
+    ; We need a size of `size + 2`, because
+    ; we want to be able to store the size
+    ; and the current position for later use.
+    mov     size total_size
+    addi    i2 totalsize
+
+    ;; Call `memory.malloc16with8offset_noendloc`
+    psh     total_size
+    call    malloc16with8offset_noendloc
+    ret
+
+
+; Way faster than `delete`.
+.def delete_unsafe                                                                                  ; Args: base_location (pointer16) -> null
+    pop     r0
+    pop     r0
+    ldi     i0 base_location_pointer0
+    ldi     i0 base_location_pointer1
+    ret
+
+
+.def delete                                                                                         ; Args: base_location (pointer16) -> null
+    pop     base_location_pointer0
+    pop     base_location_pointer1
+
+    ; Get the size. Luckily, we can use the `offset` parameter to
+    ; introduce the `location(size) = base_pointer + 1` bahaviour.
+    ; We can also write it as:
+    ;     size = memory[base_pointer + 1]
+    rpre    base_location_pointer0 base_location_pointer1 i1
+    lod     @0 @0 size
+
+    ; TODO: Get position here, so we can make the deletion loop faster...
+
+
+    ; Used so we can do `rpre ptr0 ptr1 offset`,
+    ; where `offset` is a register, not a int.
+    stg     true i0 pc_offset_mode
+    stg     true i0 ram_offset_register
+
+    ; We automatically add `1` to the offset everytime
+    ; we do `rpre ptr0 ptr1 offset`. This means that we
+    ; can easily go through the RAM.
+    stg     i1 i0 ram_offset_addition
+
+    ; Start with offset = 0, so we delete the `size` too.
+    ldi     i0 offset
+    incr    size size ; TODO: THIS IS BECAUSE OF `cur`
+    call    _delete_cleanuploop
+    ret
+
+
+; NOTE: No external code should be executed before calling this.
+; We use the raw register addresses, in order to improve performance.
+; Also, we assume that the `ram_offset_register` as well as the
+; `ram_offset_addition` flags are set to true.
+.def _delete_cleanuploop                                                                            ; Args: / -> null
+    rpre    base_location_pointer0 base_location_pointer1 offset
+    str     r0 @0 @0
+    addi    offset 0x01 offset
+
+    ; TODO: Should be eq now, right?!
+    ; We exit only if offset > size.
+    ; This is because size is the size of the stack, 
+    ; but we want to include the size attribute itself too.
+    cmpr    offset size ~gt
+    branch  i0 i1 ~gt
+        call    _delete_cleanuploop
+
+    ret
+
+
+; TODO: Wrapping of functions?!
+;       Compiletime assertions?
+
+
+.def push_value                                                                                     ; Args: base_location (pointer16), value (int8)  -> null
+    pop     base_location_pointer0
+    pop     base_location_pointer1
+    pop     value
+
+    stg     none none ram_offset_addition
+
+    ; Get the current position.
+    rpre    base_location_pointer0 base_location_pointer1 i1
+    lod     @0 @0 current
+
+    stg     true none ram_offset_register
+
+    ; Offset is usually 1 ([size][current]), but we want the
+    ; next value after that, so we can push the value to the
+    ; next free space.
+    ldi     i2 offset
+    add     offset current offset
+    rpre    base_location_pointer0 base_location_pointer1 offset
+    str     value @0 @0
+
+    ; TODO: Make new current
+    ret
+
+
+; TODO: Can we pop an empty stack?!
+.def pop_value                                                                                      ; Args: base_location (pointer16) -> int8
+    pop     base_location_pointer0
+    pop     base_location_pointer1
+
+    stg     none none ram_offset_addition
+
+    ; Get the current position.
+    rpre    base_location_pointer0 base_location_pointer1 i2
+    lod     @0 @0 current
+
+    stg     true none ram_offset_register
+
+    ; Default offset of 2 ([size][current]).
+    ldi     i3 offset
+    add     offset current offset
+    rpre    base_location_pointer0 base_location_pointer1 offset
+    lod     @0 @0 value
+    rpre    base_location_pointer0 base_location_pointer1 offset
+    rldi    i0 @0 @0
+
+    ; Little trick to avoid another `stg` instruction.
+    rpre    base_location_pointer0 base_location_pointer1 r0
+
+    ; Update the current position.
+    lod     @0 @0 current
+    subi    current 0x01 current
+
+    ; Same here.
+    rpre    base_location_pointer0 base_location_pointer1 r0
+    str     current @0 @0
+
+    psh     value
+    ret
+
+
+.def peek_value                                                                                     ; Args: base_location (pointer16) -> int8
+    pop     base_location_pointer0
+    pop     base_location_pointer1
+
+    stg     none none ram_offset_addition
+
+    ; Get the current position.
+    rpre    base_location_pointer0 base_location_pointer1 i2
+    lod     @0 @0 current
+
+    stg     true none ram_offset_register
+
+    ; Default offset of 2 ([size][current]).
+    ldi     i2 offset
+    add     offset current offset
+    rpre    base_location_pointer0 base_location_pointer1 offset
+    lod     @0 @0 value
+
+    psh     value
+    ret
+
+
+.def remove_value                                                                                   ; Args: base_location (pointer16) -> int8
+    pop     base_location_pointer0
+    pop     base_location_pointer1
+
+    stg     none none ram_offset_addition
+
+    ; Get the current position.
+    rpre    base_location_pointer0 base_location_pointer1 i1
+    lod     @0 @0 current
+
+    stg     true none ram_offset_register
+
+    ; Default offset of 1 ([size][current]).
+    addi    current 0x01 offset
+    rpre    base_location_pointer0 base_location_pointer1 offset
+    rldi    i0 @0 @0
+
+    ; Little trick to avoid another `stg` instruction.
+    rpre    base_location_pointer0 base_location_pointer1 r0
+
+    ; Update the current position.
+    lod     @0 @0 current
+    subi    current 0x01 current
+
+    rpre    base_location_pointer0 base_location_pointer1 r0
+    str     current @0 @0
+
+    ret
+
+
+.def sizeof                                                                                         ; Args: base_location (pointer16) -> int8:
+    pop     base_location_pointer0
+    pop     base_location_pointer1
+
+    stg     true none ram_offset_register
+
+    rpre    base_location_pointer0 base_location_pointer1 r0
+    lod     @0 @0 size
+
+    psh     size
+    ret
+
+
+.def currentsize                                                                                    ; Args: base_location (pointer16) -> int8:
+    pop     base_location_pointer0
+    pop     base_location_pointer1
+
+    stg     false none ram_offset_register
+
+    rpre    base_location_pointer0 base_location_pointer1 i1
+    lod     @0 @0 current
+
+    ; Add the size for [size][current]
+    addi    i2 current current
+
+    psh     current
+    ret
