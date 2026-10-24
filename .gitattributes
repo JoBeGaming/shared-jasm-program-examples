@@ -1,0 +1,5 @@
+# Recognize `*.jasm` files as Assembly.
+# This is the best we can do for now,
+# but syntax highlighting in GH will be
+# broken.
+*.jasm linguist-language=Assembly
