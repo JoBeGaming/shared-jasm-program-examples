@@ -1,0 +1,199 @@
+#EXT x-auto     ; auto macro
+#EXT x-intconv  ; 1, -1
+#EXT x-i16
+; #EXT x-f16
+#EXT x-trig ; Trigonometric functions
+#EXT x-r256 ; 256 (8b) Registers assumed
+
+; TODO: IMPLICIT 3rd ARG:
+;       When arg is not given, set as 1st arg
+
+; x port: px = &1
+; y port: py = &2
+; color port: pcol = &3
+; control port: pctrl = &4
+
+.define px &1
+.define py &2
+.define pcol &3
+.define pctrl &4
+
+.define x0 r1
+.define x1 r2
+.define y0 r3
+.define y1 r4
+
+.define y y0
+.define x x0
+
+.define dx r5
+.define dy r6
+.define d r7
+
+.define tmp r8
+
+.define c r9
+.define s r10
+
+; TODO: DEFINE THESE ARE 16B
+.define xrot r128   ; 16b register
+.define yrot r130   ; 16b register
+
+.define tmp16 r132  ; 16b register
+
+.define mx r134     ; 16b register
+.define my r136     ; 16b register
+
+
+.define a_offset_x =  1
+.define a_offset_y = -1
+.define b_offset_x =  1
+.define b_offset_y =  1
+.define c_offset_x = -1
+.define c_offset_y =  1
+.define d_offset_x = -1
+.define d_offset_y = -1
+
+
+.define f8_1  0b0111_111
+.define f8_n1 0b1111_111
+
+; Sign: f8 & 0x80
+
+
+.def plotpt
+    pop y        
+    pop x
+
+    ; TODO: ...
+
+.def plotline
+    pop y1
+    pop x1
+    pop y0
+    pop x0
+
+    sub dx x1 x0
+    sub dy y1 y0
+    lsh dy 0x02 dx ; NOTE: DY = 2DY
+    sub d dy dx
+    lsh dx 0x02 dx ; NOTE: DX = 2DX
+
+    ; for x in x0..x1
+    .def l
+        psh x
+        psh y
+        call plotpt
+
+        cmpr d r0 ~lte
+        branch i5 ~lte
+            ; Else: d > r0
+            addi y 0x01 y
+
+            ; No need to do 2 * (dy - dx)
+            ; as both variables are 2x.
+            ; tmp = dy - dx
+            sub tmp dy dx
+            add d d tmp
+
+            ; Increment x.
+            addi x 0x01 x
+            ret
+
+        ; d <= r0
+        add d d dy
+
+        ; Increment x.
+        addi x 0x01 x
+        ret
+
+    cmpr x x1 ~gt
+    branch +1 ~gt
+        ; Else: x <= x1
+        call l
+
+
+.def get_rotated_pt
+    pop rad ; Turn rate in rad
+    pop y
+    pop x
+
+    ; 1/2 side length = 1,
+    ; side length = 2
+    ; therefore our dy/dx = -1..1
+    ; as dy -1..1 and dx -1..1
+    ; Note: Instead of using division, which
+    ;       gets messy for e.g. dx = 0.0, we
+    ;       store vectors as (dx, dy).
+
+    ; "fake" integer value / 128 = "real" float value
+    ; 64 -> 0.5
+    ; 32 -> 0.25
+    ; 16 -> 0.125
+    ;  8 -> 0.6125
+    ;  ...
+    ;  1 -> 0.0078125
+
+    ; Therefore our actual range is about
+    ;     -1.0 ... +0.9921875
+
+    ; Convert actual values to "fake" integer
+    lsh x 0x07 x    ; x <<= 0x07
+    lsh y 0x07 y    ; y <<= 0x07
+
+    ; cos(rad)
+    ; USES Q7
+    psh rad
+    call cos
+    pop c
+
+    ; OR
+    ; cos rad c
+
+    ; sin(rad)
+    ; USES Q7
+    psh rad
+    call sin
+    pop s
+
+    ; OR
+    ; sin rad s
+
+    ; x' = x * cos(theta) - y * sin(theta)
+    ; y' = x * sin(theta) + y * cos(theta)
+
+    ; TODO: AS 16b
+    mult x c xrot
+    mult y s tmp16 
+    sub xrot tmp16 xrot
+
+    psh xrot
+
+    mult x s yrot
+    mult y c tmp16
+    add yrot tmp16 yrot
+
+    psh yrot
+    ret
+
+; x, y, theta
+.def square
+    pop theta
+    pop my
+    pop mx
+
+    ; rot_ax, rot_ay = get_rotated_pt(mx + a_offset_x,
+    ;                                 my + a_offset_y,
+    ;                                 theta)
+    ; ...
+
+    ; At a time we need at most 3 pairs from a b c and d.
+    ; The first two are the ones we work on.
+    ; d a
+    ; a b d
+    ; b c d
+    ; c d
+
+    ; d - a
+    ; plotline(rot_dx, rot_dy,
+    ;          rot_ax, rot_ay)
