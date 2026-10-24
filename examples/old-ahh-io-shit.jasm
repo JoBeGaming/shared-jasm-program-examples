@@ -1,0 +1,69 @@
+; IO module, providing functions like `print`
+
+; (c) JoBe, 2026
+
+
+; Print Character
+.define PTC_O                       &1
+.define PTC_CONF                    &2
+.define ptr                         r1
+.define tmp0                        ptr
+.define tmp1                        r2
+
+
+.def lchrmap
+    pop     location_l
+    pop     location_h
+    pop     size
+    ldi     size tmp0
+    ldi     0x00 tmp1
+
+    ; 0x01: Load new chrmap
+    ; 0x01: Custom
+    ; 0x02: Force overwrite any
+    pouti   0x01 PTC_CONF
+    pouti   0x01 PTC_CONF
+    pouti   0x02 PTC_CONF
+
+    call    _l1_lchrmap
+
+    ; 0xFF: CONN_CLOSE
+    pouti   0xFF PTC_CONF
+    ret
+
+
+.def _l1_lchrmap
+    cmpr    tmp0 tmp1 ~eq
+    branch  i4 i0 ~eq
+        ; Else:
+        rpre    location_l location_h tmp1
+        poutr   @0 @0 PTC_O
+        addi    0x01 tmp1 tmp1
+        call    _l1_lchrmap
+
+    ret
+
+
+; unint8 char
+.def printchar
+    pop     tmp
+    pout    PTC_O tmp
+    ret
+
+
+; uint8 ptr
+.def printmsg
+    pop     ptr
+
+    cmpr    ptr r0 ~neq
+    branch  i1 i0 ~neq
+        ; Else:
+        ret
+    addi    0x01 ptr ptr
+    psh     ptr
+    call    printmsg
+
+
+.def print
+    call    printmsg
+    ret
