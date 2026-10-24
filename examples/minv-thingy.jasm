@@ -1,0 +1,15 @@
+; *params*: version 1, version 2
+; *clutters*: TMP0, TMP1
+; *returns*: Minimum supported version for
+;            both sides.
+.def minv
+    pop     TMP0
+    pop     TMP1
+
+    cmpr    TMP0 TMP1 ~gt
+    branch  i0 i2 ~gt
+        psh     TMP1
+        ret
+
+    psh     TMP0
+    ret
