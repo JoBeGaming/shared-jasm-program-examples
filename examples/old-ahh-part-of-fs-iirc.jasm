@@ -1,0 +1,151 @@
+#ISA 2.4.5w
+
+
+.entry 0x0000 ; TODO
+
+
+; Header structure:
+; MAX_NAME_SIZE, PTR_SIZE, TABLE_SIZE, MAX_FILE_SIZE
+; [name(until nul)][ptr],...
+; 0x00 * TABLE_SIZE
+; [content] or 0xFF ptr to next (0xFF is ASCII del)
+; ...
+
+
+; File Struct
+; [PTR_NAME][FSIZE][CONTENT...]
+
+; Name Struct
+; [FOLDER][SIZE][NAME...]
+
+; Folder Struct
+; [PARENT][CHILDS][SIZE][NAME...]
+
+; Going into folders or listing the childs is worst case O(n),
+; assuming string equality checking in O(1).
+
+; Going back one level is O(1).
+; Going back multiple n levels is O(n).
+
+; ..
+
+
+.define HEADER_S                                        0x00
+.define HEADER_E                                        0x04
+
+.define MNS_OFFSET                                      0x00
+.define PTRS_OFFSET                                     0x01
+.define TBS_OFFSET                                      0x02
+.define MFS_OFFSET                                      0x03
+
+.define MAX_NAME_SIZE                                   0xFF ; in bytes
+.define PTR_SIZE                                        0x02 ; in bytes
+.define TABLE_SIZE                                      0xFF ; bytes = TABLE_SIZE * (MAX_NAME_SIZE + PTR_SIZE)
+.define MAX_FILE_SIZE                                   0xFF 0xFF ; 65kB
+
+.define I_GET                                           0x00
+.define I_SET                                           0x10
+
+.define PTR                                             TMP0
+
+
+.def get_to_contents
+    pop     NAME ; Low / Up
+    pout    0x00 0x01 OUTI;  ?
+    ldi     HEADER_E PRT
+    addi    0x01 PTR PTR
+    pout    PTR OUT
+    psh     PTR
+    psh     NAME
+    call    cmpr_byte_string
+    branch  ...
+        ; Else:
+        call    get_to_contents ; TODO: LOOP WITHOUT USING THIS FUNC; WE WOULD HAVE TO PSH
+
+
+.def compare_name
+    pop     WANTED_START
+    pop     NAME_START ; l/h
+
+    psh     NAME_START
+    call    len
+    pop     NAME_LEN
+
+    psh     WANTED_START
+    call    len
+    pop     WANTED_LEN
+
+    cmpr    NAME_LEN WANTED_LEN ~neq
+    branch  i i0 ~neq
+        ; Else:
+        psh     r0
+        ret
+
+    psh     NAME_LEN
+    psh     WANTED_LEN
+    call    min
+
+    pop     TMP0
+    ldi     0x00 LIDX
+    call    l1
+
+    ; ...
+
+
+.def l1
+    ; WANTED_START, NAME_START, TMP0 = LEN, LIDX
+
+    cmpr    LIDX TMP0 ~neq
+    branch  i i0 ~neq
+        ; Else:
+        psh     r0
+        ret
+
+    mov     WANTED_START TMP1
+    addi    i1 TMP1 TMP1
+
+    pout    I_GET 0x01 OUTI
+    pout    TMP1 OUTA
+    pout    ...
+
+    pinr    IND TMP1
+
+
+    ;   IF i == min(len(wanted), len(name))
+    ;       RET false
+    ;   IF ram[WANTED_START + i] != disk[NAME_START + 1]
+    ;       RET false
+    ;   LIDX += 1
+    ;   l1() ; AUTO ret's <-- Comp won't know...
+
+
+
+    ;   IF len(wanted) != len(name):
+    ;       RET false
+    ;   FOR i IN min(len(wanted), len(name)):
+    ;       IF ram[WANTED_START + i] != disk[NAME_START + i]:
+    ;           RET false
+    ;   RET true
+
+
+.def name_exists
+    ;   FOR file IN files:
+    ;       IF get_name(file) == name:
+    ;           RET true
+    ;   RET false
+    pop     NAME ; Low / Up
+
+    ; Start at 0x00
+    pout    0x00 0x01 OUTD
+
+
+
+
+.def make
+
+.def write
+.def read
+.def delete
+
+.def rename
+.def move
