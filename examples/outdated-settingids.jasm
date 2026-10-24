@@ -1,0 +1,122 @@
+; Setting IDs defined.
+
+; (c) JoBe, 2026
+
+
+#IF ~defined(__SETTINGS_MODULE__)
+
+	; +------+
+	; | META |
+	; +------+
+	.define NONE_L 															0x00
+	.define NONE_H															0x00
+
+
+	; +----------+
+	; | HARDWARE |
+	; +----------+
+	.define HW_WORDSIZE_L    											    0x01
+	.define HW_WORDSIZE_H													0x00
+	.define HW_REGISTER_SIZE_L												0x01
+	.define HW_REGISTER_SIZE_H												0x01
+
+	; Up to 3 Zero-Registers are supported
+	.define HW_ZERO_REGISTER_0_L											0x01
+	.define HW_ZERO_REGISTER_0_H											0x02
+	.define HW_ZERO_REGISTER_1_L											0x01
+	.define HW_ZERO_REGISTER_1_H											0x03
+	.define HW_ZERO_REGISTER_2_L											0x01
+	.define HW_ZERO_REGISTER_2_H											0x04
+
+	.define HW_STACK_SIZE_L													0x01
+	.define HW_STACK_SIZE_H													0x05
+
+	.define HW_RANDOM_ACCESS_MEMORY_SIZE_L									0x01
+	.define HW_RANDOM_ACCESS_MEMORY_SIZE_H									0x06
+
+	.define HW_PORT_SIZE_L													0x01
+	.define HW_PORT_SIZE_H													0x07
+
+	.define HW_PC_SIZE_L													0x01
+	.define HW_PC_SIZE_H													0x08
+	.define HW_CALL_STACK_SIZE_L											0x01
+	.define HW_CALL_STACK_SIZE_H											0x09
+
+	.define HW_EXECUTION_STACK_SIZE_L										0x01
+	.define HW_EXECUTION_STACK_SIZE_H										0x0A
+
+	.define HW_MICRO_OP_STACK_SIZE_L										0x01
+	.define HW_MICRO_OP_STACK_SIZE_H										0x0B
+
+	.define HW_STACK_P_DEFAULT_L											0x01
+	.define HW_STACK_P_DEFAULT_H											0x0C
+	.define HW_CSTACK_P_DEFAULT_L											0x01
+	.define HW_CSTACK_P_DEFAULT_H											0x0D
+	.define HW_ESTACK_P_DEFAULT_L											0x01
+	.define HW_ESTACK_P_DEFAULT_H											0x0E
+	.define HW_USTACK_P_DEFAULT_L											0x01
+	.define HW_USTACK_P_DEFAULT_H											0x0F
+
+	; Flag combination indicies.
+	.define HW_FLGC_INDEX_0_L												0x01
+	.define HW_FLGC_INDEX_0_H												0x10
+	.define HW_FLGC_INDEX_1_L												0x01
+	.define HW_FLGC_INDEX_1_H												0x11
+	.define HW_FLGC_INDEX_2_L												0x01
+	.define HW_FLGC_INDEX_2_H												0x12
+	.define HW_FLGC_INDEX_3_L												0x01
+	.define HW_FLGC_INDEX_3_H												0x13
+	.define HW_FLGC_INDEX_4_L												0x01
+	.define HW_FLGC_INDEX_4_H												0x14
+	.define HW_FLGC_INDEX_5_L												0x01
+	.define HW_FLGC_INDEX_5_H												0x15
+	.define HW_FLGC_INDEX_6_L												0x01
+	.define HW_FLGC_INDEX_6_H												0x16
+	.define HW_FLGC_INDEX_7_L												0x01
+	.define HW_FLGC_INDEX_7_H												0x17
+	.define HW_FLGC_INDEX_8_L												0x01
+	.define HW_FLGC_INDEX_8_H												0x18
+	.define HW_FLGC_INDEX_9_L												0x01
+	.define HW_FLGC_INDEX_9_H												0x19
+	.define HW_FLGC_INDEX_A_L												0x01
+	.define HW_FLGC_INDEX_A_H												0x1A
+	.define HW_FLGC_INDEX_B_L												0x01
+	.define HW_FLGC_INDEX_B_H												0x1B
+	.define HW_FLGC_INDEX_C_L												0x01
+	.define HW_FLGC_INDEX_C_H												0x1C
+	.define HW_FLGC_INDEX_D_L												0x01
+	.define HW_FLGC_INDEX_D_H												0x1D
+	.define HW_FLGC_INDEX_E_L												0x01
+	.define HW_FLGC_INDEX_E_H												0x1E
+	.define HW_FLGC_INDEX_F_L												0x01
+	.define HW_FLGC_INDEX_F_H												0x1F
+
+	.define HW_PC_DEFAULT_ENTRY_NO_EP_L_L									0x01
+	.define HW_PC_DEFAULT_ENTRY_NO_EP_L_H									0x20
+	.define HW_PC_DEFAULT_ENTRY_NO_EP_H_L									0x01
+	.define HW_PC_DEFAULT_ENTRY_NO_EP_H_H									0x21
+
+	; Bitflags for the `stgflg` instruction.
+	.define HW_FLAG_STGFLG_BITFLAG_NOPERANDS_L								0x01
+	.define HW_FLAG_STGFLG_BITFLAG_NOPERANDS_H								0x22
+	.define HW_FLAG_STGFLG_BITFLAG_INVERT_A_L								0x01
+	.define HW_FLAG_STGFLG_BITFLAG_INVERT_A_H								0x23
+	.define HW_FLAG_STGFLG_BITFLAG_INVERT_B_L								0x01
+	.define HW_FLAG_STGFLG_BITFLAG_INVERT_B_H								0x24
+	.define HW_FLAG_STGFLG_BITFLAG_COMBINATOR_L								0x01
+	.define HW_FLAG_STGFLG_BITFLAG_COMBINATOR_H								0x25
+	.define HW_FLAG_STGFLG_BITFLAG_A_L										0x01
+	.define HW_FLAG_STGFLG_BITFLAG_A_H										0x26
+	.define HW_FLAG_STGFLG_BITFLAG_B_L										0x01
+	.define HW_FLAG_STGFLG_BITFLAG_B_H										0x27
+
+	.define HW_FLAG_INDEX_CST_0_L											0x01
+	.define HW_FLAG_INDEX_CST_0_H											0x28
+	.define HW_FLAG_INDEX_CST_1_L											0x01
+	.define HW_FLAG_INDEX_CST_1_H											0x29
+	.define HW_FLAG_INDEX_CST_2_L											0x01
+	.define HW_FLAG_INDEX_CST_2_H											0x2A
+	.define HW_FLAG_INDEX_CST_3_L											0x01
+	.define HW_FLAG_INDEX_CST_3_H											0x2B
+
+    #DEFINE __SETTINGS_MODULE__
